@@ -77,6 +77,8 @@ const TONE_OPTIONS = ['친근함', '전문가', '교사용', '학생용', '간�
 
 const SORT_OPTIONS = [
   { id: 'updated', label: { ko: '최근 업데이트순', en: 'Recently updated', ja: '更新が新しい順' } },
+  { id: 'createdDesc', label: { ko: '생성일 최신순', en: 'Newest created', ja: '作成が新しい順' } },
+  { id: 'createdAsc', label: { ko: '생성일 오래된순', en: 'Oldest created', ja: '作成が古い順' } },
   { id: 'name', label: { ko: '이름순', en: 'Name', ja: '名前順' } },
   { id: 'stars', label: { ko: 'Star 많은 순', en: 'Most stars', ja: 'スター数順' } },
   { id: 'status', label: { ko: '상태순', en: 'By status', ja: 'ステータス順' } },
@@ -946,6 +948,10 @@ export default function App() {
           return (statusOrder[a.meta.status] ?? 99) - (statusOrder[b.meta.status] ?? 99);
         case 'priority':
           return (priorityOrder[a.meta.priority] ?? 9) - (priorityOrder[b.meta.priority] ?? 9);
+        case 'createdDesc':
+          return new Date(b.repo.created_at || 0) - new Date(a.repo.created_at || 0);
+        case 'createdAsc':
+          return new Date(a.repo.created_at || 0) - new Date(b.repo.created_at || 0);
         case 'updated':
         default:
           return new Date(b.repo.updated_at || 0) - new Date(a.repo.updated_at || 0);
