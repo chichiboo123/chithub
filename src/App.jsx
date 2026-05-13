@@ -34,6 +34,9 @@ import {
   Unlock,
   Archive,
   Languages,
+  Cloud,
+  CloudUpload,
+  CloudDownload,
 } from 'lucide-react';
 
 /* ============================================================
@@ -153,6 +156,17 @@ const I18N = {
     promoCsv: '홍보 자료 CSV',
     footer: 'Created by. 교육뮤지컬 꿈꾸는 치수쌤',
     secretInfoTitle: 'GitHub Token 보안 안내',
+    gistSyncTitle: 'Gist 동기화',
+    gistSyncDesc: 'GitHub Gist에 편집 데이터를 저장하면 어떤 기기에서도 같은 내용을 불러올 수 있습니다. 토큰에 gist 권한이 필요합니다.',
+    gistIdLabel: 'Gist ID',
+    gistIdPlaceholder: '업로드 후 자동으로 채워집니다',
+    gistUpload: '업로드',
+    gistDownload: '내려받기',
+    gistLastSync: '마지막 Gist 동기화',
+    gistNoToken: '토큰을 입력해야 Gist 동기화를 사용할 수 있습니다.',
+    gistScopeHint: '토큰에 gist 쓰기 권한이 필요합니다 (classic: gist 범위 / fine-grained: Gists read+write).',
+    gistIdHint: '다른 기기에서 이 ID를 입력하고 "내려받기"를 누르면 데이터가 동기화됩니다.',
+    gistCopyId: 'ID 복사',
   },
   en: {
     appName: 'Chithub',
@@ -222,6 +236,17 @@ const I18N = {
     promoCsv: 'Promo CSV',
     footer: 'Created by. 교육뮤지컬 꿈꾸는 치수쌤',
     secretInfoTitle: 'GitHub Token security notes',
+    gistSyncTitle: 'Gist Sync',
+    gistSyncDesc: 'Save your app metadata to a GitHub Gist to access it from any device. Requires a token with gist scope.',
+    gistIdLabel: 'Gist ID',
+    gistIdPlaceholder: 'Auto-filled after first upload',
+    gistUpload: 'Upload',
+    gistDownload: 'Download',
+    gistLastSync: 'Last Gist sync',
+    gistNoToken: 'Enter a token to use Gist sync.',
+    gistScopeHint: 'Token needs gist write scope (classic: gist / fine-grained: Gists read+write).',
+    gistIdHint: 'Enter this ID on another device and click Download to sync your data.',
+    gistCopyId: 'Copy ID',
   },
   ja: {
     appName: 'チットハブ',
@@ -291,6 +316,17 @@ const I18N = {
     promoCsv: '宣伝CSV',
     footer: 'Created by. 教育ミュージカル夢見るチスソン',
     secretInfoTitle: 'GitHubトークンのセキュリティ案内',
+    gistSyncTitle: 'Gist同期',
+    gistSyncDesc: 'GitHub Gistにデータを保存することで、どのデバイスからでも同じ情報を利用できます。gistスコープのトークンが必要です。',
+    gistIdLabel: 'Gist ID',
+    gistIdPlaceholder: 'アップロード後に自動入力されます',
+    gistUpload: 'アップロード',
+    gistDownload: 'ダウンロード',
+    gistLastSync: '最終Gist同期',
+    gistNoToken: 'Gist同期を使うにはトークンを入力してください。',
+    gistScopeHint: 'トークンにgist書き込み権限が必要です（classic: gist / fine-grained: Gists read+write）。',
+    gistIdHint: '別のデバイスでこのIDを入力し「ダウンロード」を押すとデータが同期されます。',
+    gistCopyId: 'IDをコピー',
   },
 };
 
@@ -465,6 +501,56 @@ async function fetchRecentCommits(fullName, token) {
 }
 
 /* ============================================================
+   Gist API
+============================================================ */
+
+const GIST_FILENAME = 'chithub-data.json';
+const GIST_DESCRIPTION = 'Chithub 동기화 데이터 (칫허브 앱 자동 생성)';
+
+async function apiPushGist(token, gistId, payload) {
+  const body = {
+    description: GIST_DESCRIPTION,
+    public: false,
+    files: { [GIST_FILENAME]: { content: JSON.stringify(payload, null, 2) } },
+  };
+  const res = await fetch(
+    gistId
+      ? `https://api.github.com/gists/${gistId}`
+      : 'https://api.github.com/gists',
+    {
+      method: gistId ? 'PATCH' : 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) {
+    const err = new Error(friendlyApiError(res.status));
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+
+async function apiPullGist(token, gistId) {
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
+  if (!res.ok) {
+    const err = new Error(friendlyApiError(res.status));
+    err.status = res.status;
+    throw err;
+  }
+  const gist = await res.json();
+  const file = gist.files?.[GIST_FILENAME];
+  if (!file) throw new Error(`Gist에서 ${GIST_FILENAME} 파일을 찾을 수 없습니다.`);
+  return JSON.parse(file.content);
+}
+
+/* ============================================================
    Status / category styling
 ============================================================ */
 
@@ -628,6 +714,8 @@ export default function App() {
         savedUsername: saved.savedUsername || DEFAULT_USERNAME,
         saveToken: !!saved.saveToken,
         savedToken: saved.saveToken ? saved.savedToken || '' : '',
+        gistId: saved.gistId || '',
+        lastGistSyncAt: saved.lastGistSyncAt || '',
       };
     }
     return {
@@ -636,6 +724,8 @@ export default function App() {
       savedUsername: DEFAULT_USERNAME,
       saveToken: false,
       savedToken: '',
+      gistId: '',
+      lastGistSyncAt: '',
     };
   });
 
@@ -671,6 +761,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
+  const [gistSyncing, setGistSyncing] = useState(false);
+
   const fileInputRef = useRef(null);
 
   const lang = settings.language;
@@ -683,6 +775,8 @@ export default function App() {
       savedUsername: settings.savedUsername || DEFAULT_USERNAME,
       saveToken: settings.saveToken,
       savedToken: settings.saveToken ? settings.savedToken || '' : '',
+      gistId: settings.gistId || '',
+      lastGistSyncAt: settings.lastGistSyncAt || '',
     };
     writeJSON(STORAGE_KEYS.settings, toStore);
   }, [settings]);
@@ -956,6 +1050,69 @@ export default function App() {
     const csv = rows.map((r) => r.map(csvEscape).join(',')).join('\n');
     downloadBlob(`chithub-promo-${new Date().toISOString().slice(0, 10)}.csv`, csv, 'text/csv');
     push('홍보 자료 CSV를 내려받았습니다.', 'success');
+  };
+
+  /* --- gist sync --- */
+  const effectiveToken = tokenInput || (settings.saveToken ? settings.savedToken : '');
+
+  const handlePushToGist = async () => {
+    if (!effectiveToken) {
+      push('토큰을 입력해야 Gist에 업로드할 수 있습니다.', 'error');
+      return;
+    }
+    setGistSyncing(true);
+    try {
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        app: 'chithub',
+        version: 1,
+        settings: {
+          language: settings.language,
+          savedUsername: settings.savedUsername || DEFAULT_USERNAME,
+          saveToken: false,
+          savedToken: '',
+          gistId: settings.gistId || '',
+        },
+        repoMeta,
+      };
+      const gist = await apiPushGist(effectiveToken, settings.gistId || '', payload);
+      setSettings((s) => ({
+        ...s,
+        gistId: gist.id,
+        lastGistSyncAt: new Date().toISOString(),
+      }));
+      push(`Gist에 업로드했습니다. ID: ${gist.id}`, 'success');
+    } catch (err) {
+      push(err?.message || 'Gist 업로드 중 오류가 발생했습니다.', 'error');
+    } finally {
+      setGistSyncing(false);
+    }
+  };
+
+  const handlePullFromGist = async (gistId) => {
+    if (!gistId) {
+      push('Gist ID를 입력해주세요.', 'error');
+      return;
+    }
+    setGistSyncing(true);
+    try {
+      const data = await apiPullGist(effectiveToken, gistId);
+      if (data.repoMeta && typeof data.repoMeta === 'object') {
+        setRepoMeta((prev) => ({ ...prev, ...data.repoMeta }));
+      }
+      setSettings((s) => ({
+        ...s,
+        gistId,
+        lastGistSyncAt: new Date().toISOString(),
+        ...(data.settings?.language ? { language: data.settings.language } : {}),
+        ...(data.settings?.savedUsername ? { savedUsername: data.settings.savedUsername } : {}),
+      }));
+      push('Gist에서 데이터를 내려받았습니다.', 'success');
+    } catch (err) {
+      push(err?.message || 'Gist 내려받기 중 오류가 발생했습니다.', 'error');
+    } finally {
+      setGistSyncing(false);
+    }
   };
 
   /* --- editing repo data --- */
@@ -1470,6 +1627,14 @@ export default function App() {
           }}
           onDeleteToken={handleDeleteSavedToken}
           onClose={() => setShowSettingsPanel(false)}
+          gistSyncing={gistSyncing}
+          hasToken={!!effectiveToken}
+          onPushGist={handlePushToGist}
+          onPullGist={handlePullFromGist}
+          onCopyGistId={async (id) => {
+            const ok = await copyToClipboard(id);
+            push(ok ? 'Gist ID를 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
+          }}
         />
       )}
     </div>
@@ -1984,10 +2149,20 @@ function HelpModal({ lang, onClose }) {
    SettingsModal
 ============================================================ */
 
-function SettingsModal({ lang, settings, onChangeLang, onResetUsername, onDeleteToken, onClose }) {
+function SettingsModal({
+  lang, settings, onChangeLang, onResetUsername, onDeleteToken, onClose,
+  gistSyncing, hasToken, onPushGist, onPullGist, onCopyGistId,
+}) {
+  const [localGistId, setLocalGistId] = useState(settings.gistId || '');
+
+  useEffect(() => {
+    setLocalGistId(settings.gistId || '');
+  }, [settings.gistId]);
+
   return (
     <Modal title={t(lang, 'settings')} onClose={onClose}>
-      <div className="space-y-5">
+      <div className="space-y-6">
+        {/* 언어 */}
         <section>
           <h4 className="font-bold text-slate-900 mb-2">언어 / Language / 言語</h4>
           <select
@@ -2002,6 +2177,7 @@ function SettingsModal({ lang, settings, onChangeLang, onResetUsername, onDelete
           </select>
         </section>
 
+        {/* 기본 Username */}
         <section>
           <h4 className="font-bold text-slate-900 mb-2">기본 Username</h4>
           <p className="text-sm text-slate-600 mb-2">
@@ -2012,6 +2188,7 @@ function SettingsModal({ lang, settings, onChangeLang, onResetUsername, onDelete
           </button>
         </section>
 
+        {/* 토큰 관리 */}
         <section>
           <h4 className="font-bold text-slate-900 mb-2">토큰 관리</h4>
           <p className="text-sm text-slate-600 mb-2">
@@ -2027,9 +2204,87 @@ function SettingsModal({ lang, settings, onChangeLang, onResetUsername, onDelete
           </button>
         </section>
 
+        {/* Gist 동기화 */}
+        <section className="rounded-xl border border-brand-200 bg-brand-50/40 p-4 space-y-3">
+          <div>
+            <h4 className="font-bold text-slate-900 flex items-center gap-2">
+              <Cloud className="w-4 h-4 text-brand-600" /> {t(lang, 'gistSyncTitle')}
+            </h4>
+            <p className="text-xs text-slate-600 mt-1">{t(lang, 'gistSyncDesc')}</p>
+          </div>
+
+          {!hasToken && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs p-2 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              {t(lang, 'gistNoToken')}
+            </div>
+          )}
+
+          <div>
+            <label className="label text-xs" htmlFor="gist-id-input">{t(lang, 'gistIdLabel')}</label>
+            <div className="flex gap-2">
+              <input
+                id="gist-id-input"
+                className="input text-xs font-mono flex-1"
+                value={localGistId}
+                onChange={(e) => setLocalGistId(e.target.value)}
+                placeholder={t(lang, 'gistIdPlaceholder')}
+                spellCheck="false"
+              />
+              <button
+                className="btn-secondary text-xs py-1.5 shrink-0"
+                onClick={() => onCopyGistId(localGistId)}
+                disabled={!localGistId}
+                aria-label={t(lang, 'gistCopyId')}
+              >
+                <Copy className="w-3.5 h-3.5" /> {t(lang, 'gistCopyId')}
+              </button>
+            </div>
+            {localGistId && (
+              <p className="text-xs text-slate-500 mt-1">{t(lang, 'gistIdHint')}</p>
+            )}
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="btn-primary text-sm"
+              onClick={onPushGist}
+              disabled={gistSyncing || !hasToken}
+            >
+              {gistSyncing
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <CloudUpload className="w-4 h-4" />}
+              {t(lang, 'gistUpload')}
+            </button>
+            <button
+              className="btn-secondary text-sm"
+              onClick={() => onPullGist(localGistId)}
+              disabled={gistSyncing || !localGistId}
+            >
+              {gistSyncing
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <CloudDownload className="w-4 h-4" />}
+              {t(lang, 'gistDownload')}
+            </button>
+          </div>
+
+          {settings.lastGistSyncAt && (
+            <p className="text-xs text-slate-500 flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              {t(lang, 'gistLastSync')}: {formatDateTime(settings.lastGistSyncAt)}
+            </p>
+          )}
+
+          <p className="text-xs text-slate-500 flex items-start gap-1">
+            <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-brand-600" />
+            {t(lang, 'gistScopeHint')}
+          </p>
+        </section>
+
+        {/* 참고 */}
         <section className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600">
           <strong className="text-slate-800 block mb-1">참고</strong>
-          이 앱은 모든 데이터를 브라우저의 localStorage에만 저장합니다. JSON 백업 파일에는 토큰이 포함되지 않습니다.
+          이 앱은 편집 데이터를 브라우저 localStorage에 저장합니다. Gist 동기화를 사용하면 GitHub Gist(비공개)를 통해 기기 간 공유가 가능합니다. JSON 백업 및 Gist 업로드 파일에는 토큰이 포함되지 않습니다.
         </section>
       </div>
     </Modal>
