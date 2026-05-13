@@ -31,7 +31,6 @@ import {
   GitFork,
   CircleAlert,
   Lock,
-  Unlock,
   Archive,
   Languages,
   Cloud,
@@ -399,6 +398,22 @@ const daysSince = (iso) => {
   return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60 * 24);
 };
 
+// 사용자가 입력한 배포 URL > repo.homepage > GitHub Pages 자동 추정
+const getDeploymentUrl = (repo, meta) => {
+  if (meta?.deploymentUrl) return { url: meta.deploymentUrl, source: 'manual' };
+  if (repo?.homepage) return { url: repo.homepage, source: 'homepage' };
+  if (repo?.has_pages) {
+    const owner = repo.owner?.login || repo.full_name?.split('/')[0];
+    const name = repo.name || repo.full_name?.split('/')[1];
+    if (!owner || !name) return { url: '', source: '' };
+    if (name.toLowerCase() === `${owner.toLowerCase()}.github.io`) {
+      return { url: `https://${owner}.github.io/`, source: 'auto' };
+    }
+    return { url: `https://${owner}.github.io/${name}/`, source: 'auto' };
+  }
+  return { url: '', source: '' };
+};
+
 const friendlyApiError = (status) => {
   switch (status) {
     case 401:
@@ -627,7 +642,7 @@ function buildPromo(repo, meta) {
   const featureLine = features.length ? features.join(', ') : shortDesc;
   const targetUsers = meta.targetUsers || '학생과 교사';
   const useCase = meta.useCase || '수업 및 연수 활동';
-  const url = meta.deploymentUrl || repo.homepage || '';
+  const url = getDeploymentUrl(repo, meta).url;
   const githubUrl = repo.html_url || '';
   const hashtags = (meta.hashtags || []).filter(Boolean).map((h) => (h.startsWith('#') ? h : `#${h}`));
 
@@ -713,7 +728,7 @@ export default function App() {
       return {
         language: saved.language || 'ko',
         theme: saved.theme || 'light',
-        savedUsername: saved.savedUsername || DEFAULT_USERNAME,
+        savedUsername: saved.savedUsername || '',
         saveToken: !!saved.saveToken,
         savedToken: saved.saveToken ? saved.savedToken || '' : '',
         gistId: saved.gistId || '',
@@ -723,7 +738,7 @@ export default function App() {
     return {
       language: 'ko',
       theme: 'light',
-      savedUsername: DEFAULT_USERNAME,
+      savedUsername: '',
       saveToken: false,
       savedToken: '',
       gistId: '',
@@ -737,7 +752,7 @@ export default function App() {
   );
 
   /* --- form / runtime --- */
-  const [usernameInput, setUsernameInput] = useState(settings.savedUsername || DEFAULT_USERNAME);
+  const [usernameInput, setUsernameInput] = useState(settings.savedUsername || '');
   const [tokenInput, setTokenInput] = useState(settings.saveToken ? settings.savedToken : '');
   const [saveTokenChecked, setSaveTokenChecked] = useState(settings.saveToken);
   const [showToken, setShowToken] = useState(false);
@@ -774,7 +789,7 @@ export default function App() {
     const toStore = {
       language: settings.language,
       theme: settings.theme,
-      savedUsername: settings.savedUsername || DEFAULT_USERNAME,
+      savedUsername: settings.savedUsername || '',
       saveToken: settings.saveToken,
       savedToken: settings.saveToken ? settings.savedToken || '' : '',
       gistId: settings.gistId || '',
@@ -804,9 +819,9 @@ export default function App() {
 
   /* --- handlers: load repos --- */
   const handleLoadPublic = async () => {
-    const username = (usernameInput || DEFAULT_USERNAME).trim();
+    const username = usernameInput.trim();
     if (!username) {
-      push('Username을 입력해주세요.', 'error');
+      push('GitHub Username을 입력해주세요.', 'error');
       return;
     }
     setLoadingRepos(true);
@@ -987,7 +1002,7 @@ export default function App() {
       settings: {
         language: settings.language,
         theme: settings.theme,
-        savedUsername: settings.savedUsername || DEFAULT_USERNAME,
+        savedUsername: settings.savedUsername || '',
         saveToken: false,
         savedToken: '',
       },
@@ -1033,7 +1048,7 @@ export default function App() {
         meta.status || '',
         meta.shortDescription || repo.description || '',
         meta.features || [],
-        meta.deploymentUrl || repo.homepage || '',
+        getDeploymentUrl(repo, meta).url,
         repo.html_url || '',
         meta.hashtags || [],
         meta.memo || '',
@@ -1074,7 +1089,7 @@ export default function App() {
         version: 1,
         settings: {
           language: settings.language,
-          savedUsername: settings.savedUsername || DEFAULT_USERNAME,
+          savedUsername: settings.savedUsername || '',
           saveToken: false,
           savedToken: '',
           gistId: settings.gistId || '',
@@ -1213,8 +1228,8 @@ export default function App() {
         )}
 
         {/* Connect panel */}
-        <section className="card p-5">
-          <div className="flex items-center justify-between mb-3">
+        <section className="card p-4 sm:p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3 mb-3">
             <h2 className="text-base font-bold flex items-center gap-2">
               <Github className="w-4 h-4" /> GitHub 연결
             </h2>
@@ -1235,7 +1250,7 @@ export default function App() {
                 aria-describedby="username-desc"
               />
               <p id="username-desc" className="mt-1 text-xs text-slate-500">
-                기본값은 <code className="bg-slate-100 px-1 rounded">{DEFAULT_USERNAME}</code> 입니다.
+                예시: <code className="bg-slate-100 px-1 rounded">{DEFAULT_USERNAME}</code>
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -1326,9 +1341,10 @@ export default function App() {
 
         {/* Filters / view controls */}
         {repos.length > 0 && (
-          <section className="card p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex-1 min-w-[200px]">
+          <section className="card p-3 sm:p-4">
+            {/* 1행: 검색 + 보기 모드 */}
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+              <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <label htmlFor="search" className="sr-only">{t(lang, 'search')}</label>
                 <input
@@ -1339,79 +1355,97 @@ export default function App() {
                   placeholder={`${t(lang, 'search')}…`}
                 />
               </div>
-
-              <div className="flex items-center gap-2 flex-wrap">
-                <SelectField
-                  label={t(lang, 'category')}
-                  value={filterCategory}
-                  onChange={setFilterCategory}
-                  options={['', ...categories]}
-                  placeholder={t(lang, 'statusAll')}
-                />
-                <SelectField
-                  label="상태"
-                  value={filterStatus}
-                  onChange={setFilterStatus}
-                  options={['', ...STATUS_OPTIONS]}
-                  placeholder={t(lang, 'statusAll')}
-                />
-                <SelectField
-                  label={t(lang, 'language')}
-                  value={filterLanguage}
-                  onChange={setFilterLanguage}
-                  options={['', ...languages]}
-                  placeholder={t(lang, 'statusAll')}
-                />
-                <SelectField
-                  label={t(lang, 'visibility')}
-                  value={filterVisibility}
-                  onChange={setFilterVisibility}
-                  options={['', 'public', 'private']}
-                  placeholder={t(lang, 'statusAll')}
-                  labelMap={{ public: '공개', private: '비공개' }}
-                />
-                <div>
-                  <label className="label sr-only" htmlFor="sort">{t(lang, 'sortBy')}</label>
-                  <select
-                    id="sort"
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value)}
-                    className="input py-1.5 w-auto"
-                    aria-label={t(lang, 'sortBy')}
-                  >
-                    {SORT_OPTIONS.map((opt) => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label[lang] || opt.label.ko}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="ml-auto flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+              <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 self-stretch sm:self-auto">
                 <button
-                  className={`btn ${viewMode === 'card' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}
+                  className={`btn flex-1 sm:flex-initial ${
+                    viewMode === 'card'
+                      ? 'bg-white shadow-sm text-slate-900'
+                      : 'text-slate-500'
+                  }`}
                   onClick={() => setViewMode('card')}
                   aria-pressed={viewMode === 'card'}
                 >
-                  <LayoutGrid className="w-4 h-4" /> {t(lang, 'viewCard')}
+                  <LayoutGrid className="w-4 h-4" />
+                  <span className="hidden xs:inline sm:inline">{t(lang, 'viewCard')}</span>
                 </button>
                 <button
-                  className={`btn ${viewMode === 'table' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500'}`}
+                  className={`btn flex-1 sm:flex-initial ${
+                    viewMode === 'table'
+                      ? 'bg-white shadow-sm text-slate-900'
+                      : 'text-slate-500'
+                  }`}
                   onClick={() => setViewMode('table')}
                   aria-pressed={viewMode === 'table'}
                 >
-                  <TableIcon className="w-4 h-4" /> {t(lang, 'viewTable')}
+                  <TableIcon className="w-4 h-4" />
+                  <span className="hidden xs:inline sm:inline">{t(lang, 'viewTable')}</span>
                 </button>
               </div>
             </div>
 
-            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            {/* 2행: 필터 */}
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <SelectField
+                label={t(lang, 'category')}
+                value={filterCategory}
+                onChange={setFilterCategory}
+                options={['', ...categories]}
+                placeholder={t(lang, 'statusAll')}
+              />
+              <SelectField
+                label="상태"
+                value={filterStatus}
+                onChange={setFilterStatus}
+                options={['', ...STATUS_OPTIONS]}
+                placeholder={t(lang, 'statusAll')}
+              />
+              <SelectField
+                label={t(lang, 'language')}
+                value={filterLanguage}
+                onChange={setFilterLanguage}
+                options={['', ...languages]}
+                placeholder={t(lang, 'statusAll')}
+              />
+              <SelectField
+                label={t(lang, 'visibility')}
+                value={filterVisibility}
+                onChange={setFilterVisibility}
+                options={['', 'public', 'private']}
+                placeholder={t(lang, 'statusAll')}
+                labelMap={{ public: '공개', private: '비공개' }}
+              />
+              <div>
+                <label className="label sr-only" htmlFor="sort">{t(lang, 'sortBy')}</label>
+                <select
+                  id="sort"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="input py-1.5 w-auto"
+                  aria-label={t(lang, 'sortBy')}
+                >
+                  {SORT_OPTIONS.map((opt) => (
+                    <option key={opt.id} value={opt.id}>
+                      {opt.label[lang] || opt.label.ko}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 3행: 백업 / 다운로드 + 결과 수 */}
+            <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
               <button className="btn-secondary text-xs py-1.5" onClick={exportBackup}>
-                <Download className="w-3.5 h-3.5" /> {t(lang, 'backup')}
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{t(lang, 'backup')}</span>
+                <span className="sm:hidden">백업</span>
               </button>
-              <button className="btn-secondary text-xs py-1.5" onClick={() => fileInputRef.current?.click()}>
-                <Upload className="w-3.5 h-3.5" /> {t(lang, 'restore')}
+              <button
+                className="btn-secondary text-xs py-1.5"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{t(lang, 'restore')}</span>
+                <span className="sm:hidden">복원</span>
               </button>
               <input
                 ref={fileInputRef}
@@ -1425,12 +1459,16 @@ export default function App() {
                 className="hidden"
               />
               <button className="btn-secondary text-xs py-1.5" onClick={exportCsv}>
-                <Download className="w-3.5 h-3.5" /> {t(lang, 'csv')}
+                <Download className="w-3.5 h-3.5" /> CSV
               </button>
               <button className="btn-secondary text-xs py-1.5" onClick={exportPromoCsv}>
-                <Sparkles className="w-3.5 h-3.5" /> {t(lang, 'promoCsv')}
+                <Sparkles className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{t(lang, 'promoCsv')}</span>
+                <span className="sm:hidden">홍보 CSV</span>
               </button>
-              <span className="text-slate-500 ml-auto">결과 {filtered.length}개</span>
+              <span className="text-slate-500 ml-auto whitespace-nowrap">
+                결과 <strong className="text-slate-700">{filtered.length}</strong>개
+              </span>
             </div>
           </section>
         )}
@@ -1478,84 +1516,148 @@ export default function App() {
           {!loadingRepos && filtered.length > 0 && viewMode === 'table' && (
             <div className="card overflow-x-auto scroll-shadow">
               <table className="min-w-[900px] w-full text-sm">
-                <thead className="text-left text-xs uppercase tracking-wide text-slate-500 bg-slate-50">
+                <thead className="sticky top-0 z-10 text-left text-xs uppercase tracking-wide text-slate-500 bg-slate-100/95 backdrop-blur shadow-[inset_0_-1px_0_rgb(226,232,240)]">
                   <tr>
-                    <th className="px-4 py-3">앱 이름</th>
-                    <th className="px-4 py-3">리포지토리</th>
-                    <th className="px-4 py-3">카테고리</th>
-                    <th className="px-4 py-3">상태</th>
-                    <th className="px-4 py-3">언어</th>
-                    <th className="px-4 py-3">최초 생성일</th>
-                    <th className="px-4 py-3">최종 수정일</th>
-                    <th className="px-4 py-3">배포 URL</th>
-                    <th className="px-4 py-3">GitHub</th>
-                    <th className="px-4 py-3">메모</th>
-                    <th className="px-4 py-3 text-right">동작</th>
+                    <th className="px-4 py-3 font-semibold">앱 / 리포지토리</th>
+                    <th className="px-3 py-3 font-semibold">상태</th>
+                    <th className="px-3 py-3 font-semibold">카테고리</th>
+                    <th className="px-3 py-3 font-semibold">언어</th>
+                    <th className="px-3 py-3 font-semibold whitespace-nowrap">생성 / 수정</th>
+                    <th className="px-3 py-3 font-semibold whitespace-nowrap">활동</th>
+                    <th className="px-3 py-3 font-semibold">메모</th>
+                    <th className="px-3 py-3 font-semibold text-center">링크</th>
+                    <th className="px-3 py-3 font-semibold text-right">동작</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map(({ repo, meta }) => (
-                    <tr key={repo.id} className="border-t border-slate-100 hover:bg-slate-50/60">
-                      <td className="px-4 py-3 font-semibold">{meta.appTitleKr || repo.name}</td>
-                      <td className="px-4 py-3 text-slate-700">{repo.full_name}</td>
-                      <td className="px-4 py-3">
-                        {meta.category ? (
-                          <span className="badge bg-brand-50 text-brand-700 border border-brand-200">{meta.category}</span>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        {meta.status ? (
-                          <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">{repo.language || '—'}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-slate-600">{formatDate(repo.created_at)}</td>
-                      <td className="px-4 py-3 whitespace-nowrap">{formatDate(repo.updated_at)}</td>
-                      <td className="px-4 py-3">
-                        {meta.deploymentUrl || repo.homepage ? (
-                          <a
-                            href={meta.deploymentUrl || repo.homepage}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-brand-700 hover:underline inline-flex items-center gap-1"
-                          >
-                            열기 <ExternalLink className="w-3 h-3" />
-                          </a>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <a
-                          href={repo.html_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-brand-700 hover:underline inline-flex items-center gap-1"
-                        >
-                          GitHub <ExternalLink className="w-3 h-3" />
-                        </a>
-                      </td>
-                      <td className="px-4 py-3 max-w-[220px] truncate text-slate-600">{meta.memo || ''}</td>
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <button
-                          className="btn-ghost text-xs"
-                          onClick={() => setEditingRepo(repo.full_name)}
-                        >
-                          <Edit3 className="w-3.5 h-3.5" /> {t(lang, 'edit')}
-                        </button>
-                        <button
-                          className="btn-ghost text-xs"
-                          onClick={() => setPromoRepo(repo.full_name)}
-                        >
-                          <Sparkles className="w-3.5 h-3.5" /> {t(lang, 'generatePromo')}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {filtered.map(({ repo, meta }, idx) => {
+                    const d = getDeploymentUrl(repo, meta);
+                    return (
+                      <tr
+                        key={repo.id}
+                        className={`border-t border-slate-100 ${
+                          idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'
+                        } hover:bg-brand-50/40 transition-colors`}
+                      >
+                        <td className="px-4 py-3 max-w-[260px]">
+                          <div className="font-semibold text-slate-900 truncate">
+                            {meta.appTitleKr || repo.name}
+                          </div>
+                          <div className="text-xs text-slate-500 truncate font-mono flex items-center gap-1">
+                            {repo.private && <Lock className="w-3 h-3 inline shrink-0" aria-label="비공개" />}
+                            {repo.archived && <Archive className="w-3 h-3 inline shrink-0" aria-label="아카이브" />}
+                            <span className="truncate">{repo.full_name}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-3">
+                          {meta.status ? (
+                            <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {meta.category ? (
+                            <span className="badge bg-brand-50 text-brand-700 border border-brand-200">
+                              {meta.category}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3">
+                          {repo.language ? (
+                            <span className="badge bg-slate-100 text-slate-700">{repo.language}</span>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-600 leading-tight">
+                          <div title="최초 생성일">📅 {formatDate(repo.created_at)}</div>
+                          <div className="text-slate-500" title="최종 수정일">
+                            ✏️ {formatDate(repo.updated_at)}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1" title="Stars">
+                            <Star className="w-3 h-3" /> {repo.stargazers_count || 0}
+                          </span>
+                          <span className="inline-flex items-center gap-1 ml-2" title="Forks">
+                            <GitFork className="w-3 h-3" /> {repo.forks_count || 0}
+                          </span>
+                        </td>
+                        <td className="px-3 py-3 max-w-[200px]">
+                          {meta.memo ? (
+                            <div
+                              className="text-slate-600 line-clamp-2 text-xs leading-snug"
+                              title={meta.memo}
+                            >
+                              {meta.memo}
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <div className="inline-flex items-center gap-1">
+                            <a
+                              href={repo.html_url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="p-1.5 rounded hover:bg-slate-100 text-slate-700 inline-flex"
+                              title="GitHub로 이동"
+                              aria-label="GitHub로 이동"
+                            >
+                              <Github className="w-4 h-4" />
+                            </a>
+                            {d.url ? (
+                              <a
+                                href={d.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="p-1.5 rounded hover:bg-slate-100 text-slate-700 inline-flex relative"
+                                title={
+                                  d.source === 'auto'
+                                    ? `GitHub Pages 자동 감지: ${d.url}`
+                                    : d.url
+                                }
+                                aria-label="배포 URL 열기"
+                              >
+                                <ExternalLink className="w-4 h-4" />
+                                {d.source === 'auto' && (
+                                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-amber-400 rounded-full" />
+                                )}
+                              </a>
+                            ) : (
+                              <span className="p-1.5 inline-flex text-slate-300">
+                                <ExternalLink className="w-4 h-4" />
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              className="p-1.5 rounded hover:bg-slate-100 text-slate-700 inline-flex"
+                              onClick={() => setEditingRepo(repo.full_name)}
+                              title="편집"
+                              aria-label="편집"
+                            >
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button
+                              className="p-1.5 rounded hover:bg-brand-50 text-brand-700 inline-flex"
+                              onClick={() => setPromoRepo(repo.full_name)}
+                              title="홍보문 생성"
+                              aria-label="홍보문 생성"
+                            >
+                              <Sparkles className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -1627,9 +1729,9 @@ export default function App() {
           settings={settings}
           onChangeLang={(l) => setSettings((s) => ({ ...s, language: l }))}
           onResetUsername={() => {
-            setSettings((s) => ({ ...s, savedUsername: DEFAULT_USERNAME }));
-            setUsernameInput(DEFAULT_USERNAME);
-            push('Username을 기본값으로 되돌렸습니다.', 'success');
+            setSettings((s) => ({ ...s, savedUsername: '' }));
+            setUsernameInput('');
+            push('저장된 Username을 비웠습니다.', 'success');
           }}
           onDeleteToken={handleDeleteSavedToken}
           onClose={() => setShowSettingsPanel(false)}
@@ -1731,95 +1833,90 @@ function Modal({ title, onClose, children, footer, wide }) {
 ============================================================ */
 
 function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits }) {
-  return (
-    <article className="card p-4 flex flex-col">
-      <header className="flex items-start gap-2">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <Github className="w-3.5 h-3.5" />
-            <span className="truncate">{repo.full_name}</span>
-            {repo.private ? <Lock className="w-3.5 h-3.5 text-slate-400" /> : <Unlock className="w-3.5 h-3.5 text-slate-300" />}
-            {repo.archived && <Archive className="w-3.5 h-3.5 text-zinc-400" />}
-          </div>
-          <h3 className="text-base font-bold mt-0.5 truncate">
-            {meta.appTitleKr || repo.name}
-            {meta.appTitleEn && <span className="text-slate-400 font-medium"> · {meta.appTitleEn}</span>}
-          </h3>
-        </div>
-        <div className="flex flex-col items-end gap-1 text-xs text-slate-500 shrink-0">
-          {meta.status && <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>}
-          {meta.category && <span className="badge bg-brand-50 text-brand-700 border border-brand-200">{meta.category}</span>}
-        </div>
-      </header>
+  const deploy = getDeploymentUrl(repo, meta);
 
-      <p className="mt-2 text-sm text-slate-600 line-clamp-2 min-h-[2.5em]">
-        {meta.shortDescription || repo.description || '설명이 없습니다.'}
+  return (
+    <article className="card p-4 sm:p-5 flex flex-col h-full">
+      {/* 리포지토리 경로 + 공개/아카이브 표시 */}
+      <div className="flex items-center gap-1.5 text-xs text-slate-500 min-w-0">
+        <Github className="w-3.5 h-3.5 shrink-0" />
+        <span className="truncate font-mono">{repo.full_name}</span>
+        {repo.private && <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-label="비공개" />}
+        {repo.archived && <Archive className="w-3.5 h-3.5 text-zinc-400 shrink-0" aria-label="아카이브" />}
+      </div>
+
+      {/* 앱 이름 */}
+      <h3 className="text-base sm:text-lg font-bold leading-snug mt-1.5 break-words">
+        {meta.appTitleKr || repo.name}
+      </h3>
+      {meta.appTitleEn && (
+        <div className="text-xs text-slate-500 mt-0.5 break-words">{meta.appTitleEn}</div>
+      )}
+
+      {/* 상태 / 카테고리 / 언어 배지 */}
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {meta.status && <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>}
+        {meta.category && (
+          <span className="badge bg-brand-50 text-brand-700 border border-brand-200">{meta.category}</span>
+        )}
+        {repo.language && <span className="badge bg-slate-100 text-slate-700">{repo.language}</span>}
+      </div>
+
+      {/* 설명 */}
+      <p className="mt-2.5 text-sm text-slate-600 leading-relaxed line-clamp-2 min-h-[2.5em]">
+        {meta.shortDescription || repo.description || (
+          <span className="text-slate-400 italic">설명이 없습니다.</span>
+        )}
       </p>
 
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-        {repo.language && (
-          <span className="badge bg-slate-100 text-slate-700">{repo.language}</span>
-        )}
-        <span className="flex items-center gap-1"><Star className="w-3.5 h-3.5" /> {repo.stargazers_count || 0}</span>
-        <span className="flex items-center gap-1"><GitFork className="w-3.5 h-3.5" /> {repo.forks_count || 0}</span>
-        <span className="flex items-center gap-1"><CircleAlert className="w-3.5 h-3.5" /> {repo.open_issues_count || 0}</span>
+      {/* Stats + 날짜 */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+        <span className="flex items-center gap-1" title="Stars">
+          <Star className="w-3.5 h-3.5" /> {repo.stargazers_count || 0}
+        </span>
+        <span className="flex items-center gap-1" title="Forks">
+          <GitFork className="w-3.5 h-3.5" /> {repo.forks_count || 0}
+        </span>
+        <span className="flex items-center gap-1" title="Open issues">
+          <CircleAlert className="w-3.5 h-3.5" /> {repo.open_issues_count || 0}
+        </span>
+        <span className="ml-auto text-slate-400" title="최초 생성일 / 최종 수정일">
+          📅 {formatDate(repo.created_at)} · ✏️ {formatDate(repo.updated_at)}
+        </span>
       </div>
 
-      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
-        <span title="최초 생성일">📅 생성: {formatDate(repo.created_at)}</span>
-        <span title="최종 수정일">✏️ 수정: {formatDate(repo.updated_at)}</span>
-      </div>
-
+      {/* 해시태그 */}
       {(meta.hashtags || []).length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1">
-          {meta.hashtags.map((h, idx) => (
-            <span key={idx} className="badge bg-slate-50 text-slate-600 border border-slate-200">
+          {meta.hashtags.slice(0, 6).map((h, idx) => (
+            <span
+              key={idx}
+              className="badge bg-slate-50 text-slate-600 border border-slate-200"
+            >
               #{h.replace(/^#/, '')}
             </span>
           ))}
+          {meta.hashtags.length > 6 && (
+            <span className="text-xs text-slate-400 self-center">
+              +{meta.hashtags.length - 6}
+            </span>
+          )}
         </div>
       )}
 
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        {(meta.deploymentUrl || repo.homepage) && (
-          <a
-            className="btn-secondary text-xs py-1.5"
-            href={meta.deploymentUrl || repo.homepage}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink className="w-3.5 h-3.5" /> {t(lang, 'deployUrl')}
-          </a>
-        )}
-        <a className="btn-secondary text-xs py-1.5" href={repo.html_url} target="_blank" rel="noreferrer">
-          <Github className="w-3.5 h-3.5" /> {t(lang, 'githubBtn')}
-        </a>
-        <a
-          className="btn-secondary text-xs py-1.5"
-          href={`${repo.html_url}#readme`}
-          target="_blank"
-          rel="noreferrer"
+      {/* 메모 (있을 때만, 컴팩트하게) */}
+      {meta.memo && (
+        <div
+          className="mt-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs p-2 line-clamp-2"
+          title={meta.memo}
         >
-          <Info className="w-3.5 h-3.5" /> {t(lang, 'readme')}
-        </a>
-        <button className="btn-secondary text-xs py-1.5" onClick={onEdit}>
-          <Edit3 className="w-3.5 h-3.5" /> {t(lang, 'edit')}
-        </button>
-        <button className="btn-primary text-xs py-1.5" onClick={onPromo}>
-          <Sparkles className="w-3.5 h-3.5" /> {t(lang, 'generatePromo')}
-        </button>
-        <button
-          className="btn-ghost text-xs py-1.5"
-          onClick={onLoadCommits}
-          disabled={loadingCommits}
-        >
-          {loadingCommits ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <GitCommit className="w-3.5 h-3.5" />}
-          {t(lang, 'recentCommits')}
-        </button>
-      </div>
+          📝 {meta.memo}
+        </div>
+      )}
 
+      {/* 최근 커밋 패널 */}
       {commits && (
-        <div className="mt-3 rounded-lg bg-slate-50 border border-slate-200 p-2 text-xs text-slate-700 space-y-1">
+        <div className="mt-2.5 rounded-lg bg-slate-50 border border-slate-200 p-2 text-xs text-slate-700 space-y-1">
           {commits.length === 0 && <div className="text-slate-500">최근 커밋이 없습니다.</div>}
           {commits.map((c) => (
             <div key={c.sha} className="flex items-start gap-2">
@@ -1838,11 +1935,68 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
         </div>
       )}
 
-      {meta.memo && (
-        <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs p-2 whitespace-pre-wrap">
-          📝 {meta.memo}
+      {/* 액션 영역: 카드 하단 고정 */}
+      <div className="mt-auto pt-3 border-t border-slate-100">
+        {/* primary actions */}
+        <div className="flex gap-2">
+          <button
+            className="btn-primary text-xs sm:text-sm py-2 flex-1"
+            onClick={onEdit}
+          >
+            <Edit3 className="w-3.5 h-3.5" /> {t(lang, 'edit')}
+          </button>
+          <button
+            className="btn-primary text-xs sm:text-sm py-2 flex-1"
+            onClick={onPromo}
+          >
+            <Sparkles className="w-3.5 h-3.5" /> {t(lang, 'generatePromo')}
+          </button>
         </div>
-      )}
+
+        {/* secondary links: GitHub / 배포 / 최근 커밋 */}
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <a
+            className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1"
+            href={repo.html_url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Github className="w-3.5 h-3.5" /> GitHub
+          </a>
+          {deploy.url && (
+            <a
+              className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1 max-w-[160px]"
+              href={deploy.url}
+              target="_blank"
+              rel="noreferrer"
+              title={
+                deploy.source === 'auto'
+                  ? `GitHub Pages 자동 감지: ${deploy.url}`
+                  : deploy.url
+              }
+            >
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{t(lang, 'deployUrl')}</span>
+              {deploy.source === 'auto' && (
+                <span className="text-[10px] text-amber-600 font-semibold shrink-0">·자동</span>
+              )}
+            </a>
+          )}
+          <button
+            className="ml-auto text-slate-500 hover:text-brand-700 inline-flex items-center gap-1 disabled:opacity-50"
+            onClick={onLoadCommits}
+            disabled={loadingCommits}
+          >
+            {loadingCommits ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <GitCommit className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">{t(lang, 'recentCommits')}</span>
+            <span className="sm:hidden">커밋</span>
+          </button>
+        </div>
+      </div>
     </article>
   );
 }
@@ -2120,7 +2274,7 @@ function HelpModal({ lang, onClose }) {
           <ShieldCheck className="w-4 h-4 text-emerald-600" /> 토큰을 안전하게 다루는 방법
         </h4>
         <ul className="list-disc pl-5 space-y-1 text-sm text-slate-700">
-          <li>공개 리포지토리만 조회할 경우 GitHub Username만 입력하면 됩니다. 기본값은 <code>{DEFAULT_USERNAME}</code> 입니다.</li>
+          <li>공개 리포지토리만 조회할 경우 GitHub Username만 입력하면 됩니다. (예: <code>{DEFAULT_USERNAME}</code>)</li>
           <li>비공개 리포지토리를 불러오려면 GitHub Personal Access Token이 필요합니다.</li>
           <li>토큰은 비밀번호처럼 중요한 정보이므로 개인 기기에서만 사용하세요.</li>
           <li>이 앱은 기본적으로 토큰을 저장하지 않으며, “이 브라우저에 토큰 저장”을 체크한 경우에만 <code>localStorage</code>에 저장됩니다.</li>
@@ -2183,14 +2337,19 @@ function SettingsModal({
           </select>
         </section>
 
-        {/* 기본 Username */}
+        {/* 저장된 Username */}
         <section>
-          <h4 className="font-bold text-slate-900 mb-2">기본 Username</h4>
+          <h4 className="font-bold text-slate-900 mb-2">저장된 Username</h4>
           <p className="text-sm text-slate-600 mb-2">
-            현재 저장된 Username: <code>{settings.savedUsername || DEFAULT_USERNAME}</code>
+            현재 저장된 Username:{' '}
+            {settings.savedUsername ? (
+              <code className="bg-slate-100 px-1 rounded">{settings.savedUsername}</code>
+            ) : (
+              <span className="text-slate-400">없음</span>
+            )}
           </p>
           <button className="btn-secondary" onClick={onResetUsername}>
-            <RefreshCcw className="w-4 h-4" /> 기본값으로 되돌리기 ({DEFAULT_USERNAME})
+            <Trash2 className="w-4 h-4" /> 저장된 Username 비우기
           </button>
         </section>
 
