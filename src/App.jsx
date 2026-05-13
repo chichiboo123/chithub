@@ -42,8 +42,6 @@ import {
    Constants
 ============================================================ */
 
-const DEFAULT_USERNAME = 'chichiboo123';
-
 const STORAGE_KEYS = {
   settings: 'chithubSettings',
   repoMeta: 'chithubRepoMeta',
@@ -1246,11 +1244,11 @@ export default function App() {
                 className="input"
                 value={usernameInput}
                 onChange={(e) => setUsernameInput(e.target.value)}
-                placeholder={DEFAULT_USERNAME}
+                placeholder="GitHub Username"
                 aria-describedby="username-desc"
               />
               <p id="username-desc" className="mt-1 text-xs text-slate-500">
-                예시: <code className="bg-slate-100 px-1 rounded">{DEFAULT_USERNAME}</code>
+                GitHub 사용자명을 입력하면 공개 리포지토리를 불러올 수 있습니다.
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
@@ -2274,7 +2272,7 @@ function HelpModal({ lang, onClose }) {
           <ShieldCheck className="w-4 h-4 text-emerald-600" /> 토큰을 안전하게 다루는 방법
         </h4>
         <ul className="list-disc pl-5 space-y-1 text-sm text-slate-700">
-          <li>공개 리포지토리만 조회할 경우 GitHub Username만 입력하면 됩니다. (예: <code>{DEFAULT_USERNAME}</code>)</li>
+          <li>공개 리포지토리만 조회할 경우 GitHub Username만 입력하면 됩니다.</li>
           <li>비공개 리포지토리를 불러오려면 GitHub Personal Access Token이 필요합니다.</li>
           <li>토큰은 비밀번호처럼 중요한 정보이므로 개인 기기에서만 사용하세요.</li>
           <li>이 앱은 기본적으로 토큰을 저장하지 않으며, “이 브라우저에 토큰 저장”을 체크한 경우에만 <code>localStorage</code>에 저장됩니다.</li>
