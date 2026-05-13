@@ -1322,7 +1322,8 @@ export default function App() {
                     <th className="px-4 py-3">카테고리</th>
                     <th className="px-4 py-3">상태</th>
                     <th className="px-4 py-3">언어</th>
-                    <th className="px-4 py-3">최근 업데이트</th>
+                    <th className="px-4 py-3">최초 생성일</th>
+                    <th className="px-4 py-3">최종 수정일</th>
                     <th className="px-4 py-3">배포 URL</th>
                     <th className="px-4 py-3">GitHub</th>
                     <th className="px-4 py-3">메모</th>
@@ -1349,6 +1350,7 @@ export default function App() {
                         )}
                       </td>
                       <td className="px-4 py-3">{repo.language || '—'}</td>
+                      <td className="px-4 py-3 whitespace-nowrap text-slate-600">{formatDate(repo.created_at)}</td>
                       <td className="px-4 py-3 whitespace-nowrap">{formatDate(repo.updated_at)}</td>
                       <td className="px-4 py-3">
                         {meta.deploymentUrl || repo.homepage ? (
@@ -1590,7 +1592,11 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
         <span className="flex items-center gap-1"><Star className="w-3.5 h-3.5" /> {repo.stargazers_count || 0}</span>
         <span className="flex items-center gap-1"><GitFork className="w-3.5 h-3.5" /> {repo.forks_count || 0}</span>
         <span className="flex items-center gap-1"><CircleAlert className="w-3.5 h-3.5" /> {repo.open_issues_count || 0}</span>
-        <span className="ml-auto">{formatDate(repo.updated_at)}</span>
+      </div>
+
+      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-slate-500">
+        <span title="최초 생성일">📅 생성: {formatDate(repo.created_at)}</span>
+        <span title="최종 수정일">✏️ 수정: {formatDate(repo.updated_at)}</span>
       </div>
 
       {(meta.hashtags || []).length > 0 && (
