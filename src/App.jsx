@@ -614,14 +614,38 @@ async function apiPullGist(token, gistId) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`https://api.github.com/gists/${gistId}`, { headers });
   if (!res.ok) {
-    const err = new Error(friendlyApiError(res.status));
+    let msg;
+    if (res.status === 404) {
+      msg = token
+        ? `Gist를 찾을 수 없습니다. ID(${gistId})를 다시 확인해주세요.`
+        : `Gist를 찾을 수 없습니다. 비공개 Gist는 토큰이 필요합니다 — 상단에 PAT를 입력한 뒤 다시 시도해주세요.`;
+    } else if (res.status === 401 || res.status === 403) {
+      msg = '토큰 인증에 실패했습니다. gist 읽기 권한이 있는 토큰을 확인해주세요.';
+    } else if (res.status === 429) {
+      msg = 'GitHub API 호출 한도에 도달했습니다. 잠시 후 다시 시도해주세요.';
+    } else {
+      msg = `Gist 내려받기 중 오류가 발생했습니다. (HTTP ${res.status})`;
+    }
+    const err = new Error(msg);
     err.status = res.status;
     throw err;
   }
   const gist = await res.json();
+  // support both truncated (large file) and inline content
   const file = gist.files?.[GIST_FILENAME];
-  if (!file) throw new Error(`Gist에서 ${GIST_FILENAME} 파일을 찾을 수 없습니다.`);
-  return JSON.parse(file.content);
+  if (!file) {
+    const available = Object.keys(gist.files || {}).join(', ') || '(없음)';
+    throw new Error(
+      `Gist에 '${GIST_FILENAME}' 파일이 없습니다. Gist에 있는 파일: ${available}`
+    );
+  }
+  let content = file.content;
+  if (file.truncated && file.raw_url) {
+    const raw = await fetch(file.raw_url, { headers });
+    if (!raw.ok) throw new Error('Gist 파일 내용을 불러오지 못했습니다.');
+    content = await raw.text();
+  }
+  return JSON.parse(content);
 }
 
 /* ============================================================
@@ -2759,13 +2783,26 @@ function SettingsModal({
               className="btn-secondary text-sm"
               onClick={() => onPullGist(localGistId)}
               disabled={gistSyncing || !localGistId}
+              title={!hasToken ? '비공개 Gist는 상단에 PAT 토큰을 먼저 입력해주세요' : undefined}
             >
               {gistSyncing
                 ? <Loader2 className="w-4 h-4 animate-spin" />
                 : <CloudDownload className="w-4 h-4" />}
               {t(lang, 'gistDownload')}
+              {!hasToken && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 ml-1" />}
             </button>
           </div>
+
+          {!hasToken && localGistId && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-xs p-2 flex items-start gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+              <span>
+                비공개 Gist는 <strong>토큰이 필요</strong>합니다.
+                설정 창을 닫고 상단 "Personal Access Token" 입력란에 PAT를 먼저 입력해주세요.
+                (gist 읽기·쓰기 권한 필요)
+              </span>
+            </div>
+          )}
 
           {/* Auto sync toggle */}
           <div className="rounded-lg bg-white border border-slate-200 p-3">
