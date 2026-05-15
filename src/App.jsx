@@ -51,6 +51,7 @@ import {
 const STORAGE_KEYS = {
   settings: 'chithubSettings',
   repoMeta: 'chithubRepoMeta',
+  repos: 'chithubRepos',
 };
 
 const STATUS_OPTIONS = [
@@ -160,6 +161,9 @@ const I18N = {
     promoReadme: 'README 초안',
     promoCsv: '홍보 자료 CSV',
     footer: 'Created by. 교육뮤지컬 꿈꾸는 치수쌤',
+    clearRepos: '불러온 리포지토리 초기화',
+    clearReposConfirm: '불러온 리포지토리 목록을 모두 지웁니다. 편집한 메타데이터는 유지됩니다.',
+    connectSection: 'GitHub 연결',
     secretInfoTitle: 'GitHub Token 보안 안내',
     gistSyncTitle: 'Gist 동기화',
     gistSyncDesc: 'GitHub Gist에 편집 데이터를 저장하면 어떤 기기에서도 같은 내용을 불러올 수 있습니다. 토큰에 gist 권한이 필요합니다.',
@@ -1036,7 +1040,7 @@ export default function App() {
   const [saveTokenChecked, setSaveTokenChecked] = useState(settings.saveToken);
   const [showToken, setShowToken] = useState(false);
 
-  const [repos, setRepos] = useState([]);
+  const [repos, setRepos] = useState(() => readJSON(STORAGE_KEYS.repos, []));
   const [loadingRepos, setLoadingRepos] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState('');
   const [commitsByRepo, setCommitsByRepo] = useState({});
@@ -1050,6 +1054,7 @@ export default function App() {
   const [sortBy, setSortBy] = useState('updated');
   const [viewMode, setViewMode] = useState('card');
   const [onboardCollapsed, setOnboardCollapsed] = useState(true);
+  const [connectCollapsed, setConnectCollapsed] = useState(false);
 
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
@@ -1118,6 +1123,11 @@ export default function App() {
     writeJSON(STORAGE_KEYS.repoMeta, repoMeta);
   }, [repoMeta]);
 
+  /* --- persist repos list --- */
+  useEffect(() => {
+    writeJSON(STORAGE_KEYS.repos, repos);
+  }, [repos]);
+
   /* --- ESC to close modals --- */
   useEffect(() => {
     const onKey = (e) => {
@@ -1147,11 +1157,19 @@ export default function App() {
       setSettings((s) => ({ ...s, savedUsername: username }));
       push(`리포지토리 ${data.length}개를 불러왔습니다.`, 'success');
       setOnboardCollapsed(true);
+      setConnectCollapsed(true);
     } catch (err) {
       push(err?.message || friendlyApiError(0), 'error');
     } finally {
       setLoadingRepos(false);
     }
+  };
+
+  const handleClearRepos = () => {
+    if (!window.confirm(t(lang, 'clearReposConfirm'))) return;
+    setRepos([]);
+    setConnectCollapsed(false);
+    push('리포지토리 목록을 초기화했습니다.', 'success');
   };
 
   const handleLoadMine = async () => {
@@ -1171,6 +1189,7 @@ export default function App() {
       }
       push(`리포지토리 ${data.length}개를 불러왔습니다.`, 'success');
       setOnboardCollapsed(true);
+      setConnectCollapsed(true);
     } catch (err) {
       push(err?.message || friendlyApiError(0), 'error');
     } finally {
@@ -1530,7 +1549,7 @@ export default function App() {
   const currentPromoMeta = promoRepo ? getMeta(promoRepo) : null;
 
   return (
-    <div className="min-h-screen text-slate-900">
+    <div className="min-h-screen text-slate-900 flex flex-col">
       <ToastStack toasts={toasts} />
 
       {/* Header */}
@@ -1563,68 +1582,43 @@ export default function App() {
               </select>
               <Languages className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
             </div>
-            <button className="btn-ghost" onClick={() => setHelpOpen(true)} aria-label={t(lang, 'help')}>
-              <HelpCircle className="w-4 h-4" /> <span className="hidden sm:inline">{t(lang, 'help')}</span>
+            <button className="btn-ghost p-2" onClick={() => setHelpOpen(true)} aria-label={t(lang, 'help')} title={t(lang, 'help')}>
+              <HelpCircle className="w-5 h-5" />
             </button>
-            <button className="btn-ghost" onClick={() => setShowSettingsPanel(true)} aria-label={t(lang, 'settings')}>
-              <Settings className="w-4 h-4" /> <span className="hidden sm:inline">{t(lang, 'settings')}</span>
+            <button className="btn-ghost p-2" onClick={() => setShowSettingsPanel(true)} aria-label={t(lang, 'settings')} title={t(lang, 'settings')}>
+              <Settings className="w-5 h-5" />
             </button>
           </div>
         </div>
       </header>
 
       {/* Main */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Onboarding cards */}
-        {!onboardCollapsed && (
-          <section className="card p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-base font-bold text-slate-900">{t(lang, 'onboardTitle')}</h2>
-              <button className="btn-ghost text-sm" onClick={() => setOnboardCollapsed(true)}>
-                {t(lang, 'collapseOnboard')}
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              <OnboardCard
-                icon={<Github className="w-5 h-5" />}
-                title={t(lang, 'onboard1Title')}
-                desc={t(lang, 'onboard1Desc')}
-                step="01"
-              />
-              <OnboardCard
-                icon={<Edit3 className="w-5 h-5" />}
-                title={t(lang, 'onboard2Title')}
-                desc={t(lang, 'onboard2Desc')}
-                step="02"
-              />
-              <OnboardCard
-                icon={<Sparkles className="w-5 h-5" />}
-                title={t(lang, 'onboard3Title')}
-                desc={t(lang, 'onboard3Desc')}
-                step="03"
-              />
-            </div>
-          </section>
-        )}
-        {onboardCollapsed && (
-          <div className="text-right">
-            <button className="text-sm text-brand-700 hover:underline" onClick={() => setOnboardCollapsed(false)}>
-              {t(lang, 'expandOnboard')}
-            </button>
-          </div>
-        )}
-
+      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 space-y-6">
         {/* Connect panel */}
         <section className="card p-4 sm:p-5">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-3 mb-3">
+          <button
+            className="w-full flex items-center justify-between gap-2 text-left"
+            onClick={() => setConnectCollapsed((v) => !v)}
+            aria-expanded={!connectCollapsed}
+          >
             <h2 className="text-base font-bold flex items-center gap-2">
               <Github className="w-4 h-4" /> GitHub 연결
+              {repos.length > 0 && (
+                <span className="text-xs font-normal text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                  {repos.length}개 로드됨
+                </span>
+              )}
             </h2>
-            <div className="text-xs text-slate-500">
-              {lastSyncedAt ? `${t(lang, 'syncedAt')}: ${formatDateTime(lastSyncedAt)}` : t(lang, 'notSynced')}
+            <div className="flex items-center gap-3 shrink-0">
+              <span className="text-xs text-slate-400">
+                {lastSyncedAt ? formatDateTime(lastSyncedAt) : t(lang, 'notSynced')}
+              </span>
+              <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${connectCollapsed ? '' : 'rotate-180'}`} />
             </div>
-          </div>
+          </button>
 
+          {!connectCollapsed && (
+          <div className="mt-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label htmlFor="username" className="label">{t(lang, 'username')}</label>
@@ -1712,6 +1706,19 @@ export default function App() {
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
             <span>{t(lang, 'securityNotice')}</span>
           </div>
+          </div>
+          )}
+
+          {connectCollapsed && repos.length > 0 && (
+            <div className="mt-3 flex justify-end">
+              <button
+                className="text-xs text-red-500 hover:text-red-700 flex items-center gap-1"
+                onClick={handleClearRepos}
+              >
+                <Trash2 className="w-3.5 h-3.5" /> {t(lang, 'clearRepos')}
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Summary cards */}
@@ -2067,8 +2074,8 @@ export default function App() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-200 mt-10 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 text-sm text-slate-600 flex flex-wrap items-center gap-2">
+      <footer className="border-t border-slate-200 mt-auto bg-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-5 text-sm text-slate-500 text-center">
           <a
             href="https://litt.ly/chichiboo"
             target="_blank"
@@ -2077,8 +2084,6 @@ export default function App() {
           >
             {t(lang, 'footer')}
           </a>
-          <span className="text-slate-400">·</span>
-          <span className="text-slate-500">{t(lang, 'appName')} · {t(lang, 'appEn')}</span>
         </div>
       </footer>
 
@@ -3045,8 +3050,37 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
 
 function HelpModal({ lang, onClose }) {
   return (
-    <Modal title={t(lang, 'secretInfoTitle')} onClose={onClose}>
+    <Modal title={t(lang, 'help')} onClose={onClose}>
       <div className="prose prose-sm max-w-none">
+
+        {/* 앱 소개 */}
+        <h4 className="font-bold text-slate-900 flex items-center gap-2">
+          <Github className="w-4 h-4 text-brand-600" /> {t(lang, 'onboardTitle')}
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 not-prose">
+          <div className="rounded-lg bg-brand-50 border border-brand-100 p-3">
+            <div className="flex items-center gap-2 font-semibold text-brand-700 text-sm mb-1">
+              <span className="text-xs bg-brand-100 text-brand-600 rounded-full w-5 h-5 flex items-center justify-center font-bold">1</span>
+              {t(lang, 'onboard1Title')}
+            </div>
+            <p className="text-xs text-slate-600">{t(lang, 'onboard1Desc')}</p>
+          </div>
+          <div className="rounded-lg bg-brand-50 border border-brand-100 p-3">
+            <div className="flex items-center gap-2 font-semibold text-brand-700 text-sm mb-1">
+              <span className="text-xs bg-brand-100 text-brand-600 rounded-full w-5 h-5 flex items-center justify-center font-bold">2</span>
+              {t(lang, 'onboard2Title')}
+            </div>
+            <p className="text-xs text-slate-600">{t(lang, 'onboard2Desc')}</p>
+          </div>
+          <div className="rounded-lg bg-brand-50 border border-brand-100 p-3">
+            <div className="flex items-center gap-2 font-semibold text-brand-700 text-sm mb-1">
+              <span className="text-xs bg-brand-100 text-brand-600 rounded-full w-5 h-5 flex items-center justify-center font-bold">3</span>
+              {t(lang, 'onboard3Title')}
+            </div>
+            <p className="text-xs text-slate-600">{t(lang, 'onboard3Desc')}</p>
+          </div>
+        </div>
+
         <h4 className="font-bold text-slate-900 flex items-center gap-2">
           <ShieldCheck className="w-4 h-4 text-emerald-600" /> 토큰을 안전하게 다루는 방법
         </h4>
