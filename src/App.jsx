@@ -673,7 +673,12 @@ async function apiPullGist(token, gistId) {
 // 무료 Flash 모델 — 업데이트 시 이 한 줄만 수정
 const GEMINI_MODEL = 'gemini-2.5-flash';
 
-async function callGemini(apiKey, prompt) {
+async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
+  const generationConfig = {
+    temperature: 0.7,
+    maxOutputTokens: 8192,
+    ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
+  };
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
@@ -681,7 +686,7 @@ async function callGemini(apiKey, prompt) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+        generationConfig,
       }),
     }
   );
@@ -696,23 +701,30 @@ async function callGemini(apiKey, prompt) {
     throw new Error(errMsg);
   }
   const data = await res.json();
-  // Gemini 2.5 Flash includes thinking parts (thought: true) before the actual response
+  // Filter out thinking parts (thought: true) from Gemini 2.5 Flash
   const parts = data.candidates?.[0]?.content?.parts || [];
-  const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim() || parts[0]?.text;
+  const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim()
+    || parts.map((p) => p.text || '').join('').trim();
   if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
   return text;
 }
 
 function extractJson(text) {
-  // Gemini가 ```json ... ``` 형식으로 감쌀 때 펜스 제거
+  // jsonMode=true 사용 시 text가 이미 순수 JSON인 경우 바로 파싱
+  try { return JSON.parse(text.trim()); } catch { /* not pure JSON, fall through */ }
+  // code fence 제거
   let src = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
   if (!src) src = text.trim();
-  // 첫 { ~ 마지막 } 구간 추출
+  // 첫 { 부터 균형 잡힌 } 까지 추출 (중첩 대괄호/중괄호 지원)
   const start = src.indexOf('{');
-  const end = src.lastIndexOf('}');
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error('AI가 올바른 형식으로 응답하지 않았습니다. 다시 시도해주세요.');
+  if (start === -1) throw new Error('AI가 올바른 형식으로 응답하지 않았습니다. 다시 시도해주세요.');
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
   }
+  if (end === -1) throw new Error('AI 응답이 불완전합니다 (토큰 초과 가능). 다시 시도해주세요.');
   try {
     return JSON.parse(src.slice(start, end + 1));
   } catch {
@@ -2105,6 +2117,7 @@ export default function App() {
             setEditingRepo(null);
           }}
           geminiApiKey={settings.geminiApiKey}
+          token={effectiveToken}
         />
       )}
 
@@ -2587,7 +2600,7 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
    EditModal
 ============================================================ */
 
-function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey }) {
+function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey, token }) {
   const [form, setForm] = useState(() => ({
     ...defaultRepoMeta(),
     ...meta,
@@ -2598,6 +2611,15 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
   const [hashtagsInput, setHashtagsInput] = useState((meta?.hashtags || []).join(', '));
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [githubReadme, setGithubReadme] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchGithubReadme(repo.full_name, token).then((md) => {
+      if (!cancelled) setGithubReadme(md);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [repo.full_name, token]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -2621,6 +2643,10 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
     setAiLoading(true);
     setAiError('');
     try {
+      const readmeSection = githubReadme
+        ? `\n[GitHub README (실제 앱 설명 — 최우선 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
+        : '';
+
       const prompt = `당신은 한국 교사가 만든 교육용 GitHub 웹앱을 분석하는 AI 비서입니다.
 아래 리포지토리 정보를 보고 교사용 교육 앱 메타데이터를 추론해 JSON으로 반환하세요.
 
@@ -2628,7 +2654,7 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
 - 이름: ${repo.name}
 - GitHub 설명: ${repo.description || '없음'}
 - 기술 스택: ${repo.language || '불명'}
-- URL: ${repo.html_url}
+- URL: ${repo.html_url}${readmeSection}
 
 [작성 규칙]
 - appTitleKr: 한글 앱 이름 (자연스럽게)
@@ -2639,10 +2665,8 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
 - targetUsers: 주 사용 대상 (예: 초등학생, 교사, 학부모)
 - useCase: 주 활용 장면 (예: 국어 수업, 학급 운영, 교사 연수)
 - features: 주요 기능 목록 (3~5개, 배열)
-- hashtags: 관련 해시태그 (5~8개, # 없이, 배열)
-
-JSON만 출력하고 다른 텍스트는 절대 포함하지 마세요.`;
-      const text = await callGemini(geminiApiKey, prompt);
+- hashtags: 관련 해시태그 (5~8개, # 없이, 배열)`;
+      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
       if (data.appTitleKr) set('appTitleKr', data.appTitleKr);
       if (data.appTitleEn) set('appTitleEn', data.appTitleEn);
@@ -2922,7 +2946,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
   "readme": "README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식, 배지 포함)"
 }`;
 
-      const text = await callGemini(geminiApiKey, prompt);
+      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
       setAiPromo({
         oneLiner: data.oneLiner || '',
