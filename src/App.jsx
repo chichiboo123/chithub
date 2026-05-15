@@ -36,6 +36,10 @@ import {
   Cloud,
   CloudUpload,
   CloudDownload,
+  MoreHorizontal,
+  ChevronDown,
+  FileSpreadsheet,
+  Megaphone,
 } from 'lucide-react';
 
 /* ============================================================
@@ -166,6 +170,15 @@ const I18N = {
     gistScopeHint: '토큰에 gist 쓰기 권한이 필요합니다 (classic: gist 범위 / fine-grained: Gists read+write).',
     gistIdHint: '다른 기기에서 이 ID를 입력하고 "내려받기"를 누르면 데이터가 동기화됩니다.',
     gistCopyId: 'ID 복사',
+    autoSyncTitle: '자동 동기화',
+    autoSyncDesc: '편집 내용이 변경되면 4초 뒤 자동으로 Gist에 업로드합니다. 앱을 다시 열 때도 자동으로 내려받아 항상 최신 상태를 유지합니다.',
+    autoSyncEnabled: '자동 동기화를 사용 중입니다',
+    autoSyncDisabled: '자동 동기화가 꺼져 있습니다',
+    autoPullToast: 'Gist에서 최신 데이터를 동기화했습니다.',
+    autoPushToast: 'Gist에 변경 사항을 자동 업로드했습니다.',
+    dataMenu: '데이터 관리',
+    dataExport: '내보내기',
+    dataImport: '가져오기',
   },
   en: {
     appName: 'Chithub',
@@ -246,6 +259,15 @@ const I18N = {
     gistScopeHint: 'Token needs gist write scope (classic: gist / fine-grained: Gists read+write).',
     gistIdHint: 'Enter this ID on another device and click Download to sync your data.',
     gistCopyId: 'Copy ID',
+    autoSyncTitle: 'Auto sync',
+    autoSyncDesc: 'Changes are uploaded to the Gist 4s after the last edit, and pulled automatically when the app opens.',
+    autoSyncEnabled: 'Auto sync is on',
+    autoSyncDisabled: 'Auto sync is off',
+    autoPullToast: 'Synced latest data from Gist.',
+    autoPushToast: 'Auto-uploaded changes to Gist.',
+    dataMenu: 'Data',
+    dataExport: 'Export',
+    dataImport: 'Import',
   },
   ja: {
     appName: 'チットハブ',
@@ -326,6 +348,15 @@ const I18N = {
     gistScopeHint: 'トークンにgist書き込み権限が必要です（classic: gist / fine-grained: Gists read+write）。',
     gistIdHint: '別のデバイスでこのIDを入力し「ダウンロード」を押すとデータが同期されます。',
     gistCopyId: 'IDをコピー',
+    autoSyncTitle: '自動同期',
+    autoSyncDesc: '編集から4秒後に自動でGistへアップロードし、起動時にも自動で取得して常に最新の状態を保ちます。',
+    autoSyncEnabled: '自動同期が有効です',
+    autoSyncDisabled: '自動同期はオフです',
+    autoPullToast: 'Gistから最新データを同期しました。',
+    autoPushToast: 'Gistに変更を自動アップロードしました。',
+    dataMenu: 'データ管理',
+    dataExport: 'エクスポート',
+    dataImport: 'インポート',
   },
 };
 
@@ -352,7 +383,34 @@ const defaultRepoMeta = () => ({
   priority: '',
   lastCheckedAt: '',
   promotionTone: '',
+  updatedAt: '',
 });
+
+/* meta merger preferring newer per-key (by updatedAt / lastCheckedAt fallback) */
+const metaTimestamp = (m) => {
+  if (!m) return 0;
+  const t = m.updatedAt || m.lastCheckedAt || '';
+  if (!t) return 0;
+  const n = new Date(t).getTime();
+  return Number.isFinite(n) ? n : 0;
+};
+
+const mergeRepoMetaByTime = (local, remote) => {
+  const result = { ...local };
+  const keys = new Set([...Object.keys(local || {}), ...Object.keys(remote || {})]);
+  keys.forEach((k) => {
+    const l = local?.[k];
+    const r = remote?.[k];
+    if (!l) {
+      result[k] = r;
+    } else if (!r) {
+      result[k] = l;
+    } else {
+      result[k] = metaTimestamp(r) > metaTimestamp(l) ? r : l;
+    }
+  });
+  return result;
+};
 
 const readJSON = (key, fallback) => {
   try {
@@ -631,83 +689,209 @@ function ToastStack({ toasts }) {
    Promo generation
 ============================================================ */
 
+const CATEGORY_EMOJI = {
+  교육뮤지컬: '🎭',
+  국제교류: '🌍',
+  학급운영: '🏫',
+  문해력: '📖',
+  창작도구: '🎨',
+  '평가·피드백': '📊',
+  에듀테크: '🧑‍🏫',
+  자료정리: '🗂️',
+  기타: '✨',
+};
+
+const cleanLines = (lines) => lines.filter((l) => l != null && l !== false).join('\n');
+
+const dedupeJoin = (arr) => Array.from(new Set(arr.filter(Boolean))).join(' ');
+
 function buildPromo(repo, meta) {
-  const title = meta.appTitleKr || repo.name;
-  const titleEn = meta.appTitleEn || repo.name;
-  const shortDesc = meta.shortDescription || repo.description || '';
-  const longDesc = meta.longDescription || repo.description || '';
-  const features = (meta.features && meta.features.length ? meta.features : []).filter(Boolean);
-  const featureLine = features.length ? features.join(', ') : shortDesc;
-  const targetUsers = meta.targetUsers || '학생과 교사';
-  const useCase = meta.useCase || '수업 및 연수 활동';
+  const title = (meta.appTitleKr || repo.name || '').trim();
+  const titleEn = (meta.appTitleEn || repo.name || '').trim();
+  const shortDesc = (meta.shortDescription || repo.description || '교육 활동에 활용할 수 있는 웹앱입니다.').trim();
+  const longDesc = (meta.longDescription || meta.shortDescription || repo.description || '').trim() || shortDesc;
+  const features = (meta.features || []).filter(Boolean);
+  const targetUsers = (meta.targetUsers || '학생과 교사').trim();
+  const useCase = (meta.useCase || '수업 및 연수 활동').trim();
+  const category = (meta.category || '').trim();
+  const status = (meta.status || '').trim();
+  const tone = meta.promotionTone || '친근함';
   const url = getDeploymentUrl(repo, meta).url;
   const githubUrl = repo.html_url || '';
-  const hashtags = (meta.hashtags || []).filter(Boolean).map((h) => (h.startsWith('#') ? h : `#${h}`));
+  const hashtagsRaw = (meta.hashtags || []).filter(Boolean);
+  const hashtags = hashtagsRaw.map((h) => (h.startsWith('#') ? h : `#${h}`));
+  const catTag = category ? `#${category.replace(/[·\s]/g, '')}` : '';
+  const allTags = dedupeJoin([...hashtags, catTag, '#칫허브', '#Chithub']);
+  const catIcon = CATEGORY_EMOJI[category] || '✨';
+  const featureBullets = features.length ? features.map((f) => `• ${f}`).join('\n') : `• ${shortDesc}`;
+  const featureSummary = features.length ? features.slice(0, 3).join(' · ') : shortDesc;
 
-  const oneLiner = `${title}은(는) ${featureLine}을 통해 ${useCase}을(를) 돕는 교육용 웹앱입니다.`;
+  /* === 1) One-liner — tone aware === */
+  const oneLinerMap = {
+    친근함: `${catIcon} ${title} — ${targetUsers}과(와) 함께 ${useCase}을(를) 즐겁게 만들어 주는 웹앱이에요.`,
+    전문가: `${title}은(는) ${featureSummary}을(를) 기반으로 ${useCase} 활동을 효과적으로 지원하는 교육용 웹 솔루션입니다.`,
+    교사용: `${title}은(는) ${targetUsers} 대상 ${useCase}을(를) 위해 만든 교실 친화형 웹앱입니다 (주요 기능: ${featureSummary}).`,
+    학생용: `친구들과 함께 ${useCase}을(를) 즐겁게 해볼 수 있는 ${title}! ${featureSummary} 같은 기능이 준비돼 있어요.`,
+    간결함: `${title} — ${shortDesc}`,
+  };
+  const oneLiner = oneLinerMap[tone] || oneLinerMap['친근함'];
 
-  const sns = [
-    `${title}을 소개합니다.`,
+  /* === 2) SNS post === */
+  const snsHeaderMap = {
+    친근함: `${catIcon} 새 웹앱을 소개합니다!`,
+    전문가: `${catIcon} 신규 교육용 웹앱 소개`,
+    교사용: `${catIcon} 교실에서 바로 활용할 수 있는 웹앱`,
+    학생용: `${catIcon} 함께 써보고 싶은 새 웹앱!`,
+    간결함: `${catIcon} ${title}`,
+  };
+  const sns = cleanLines([
+    snsHeaderMap[tone] || snsHeaderMap['친근함'],
     '',
-    `${longDesc}`,
+    `✨ ${title}${titleEn && titleEn !== title ? ` (${titleEn})` : ''}`,
+    shortDesc,
     '',
-    '수업, 연수, 자료 제작 등에서 활용할 수 있습니다.',
+    features.length && '🛠 핵심 기능',
+    features.length && featureBullets,
+    features.length && '',
+    `🎯 활용: ${useCase}`,
+    `👥 대상: ${targetUsers}`,
+    category && `🏷 카테고리: ${category}`,
     '',
-    hashtags.join(' '),
-  ].join('\n');
+    url && `🔗 ${url}`,
+    githubUrl && `💻 ${githubUrl}`,
+    '',
+    allTags,
+  ]);
 
-  const youtube = [
-    `${title} | ${titleEn}`,
+  /* === 3) YouTube description === */
+  const youtube = cleanLines([
+    `${title}${titleEn && titleEn !== title ? ` | ${titleEn}` : ''}`,
     '',
+    '📌 소개',
     longDesc,
     '',
-    features.length ? `주요 기능: ${features.join(', ')}` : '',
+    features.length && '📌 주요 기능',
+    features.length && features.map((f) => `- ${f}`).join('\n'),
+    features.length && '',
+    '📌 활용 장면',
+    `${useCase} (대상: ${targetUsers})`,
     '',
-    `활용 장면: ${useCase}`,
+    '📌 링크',
+    url && `▶ 배포 페이지: ${url}`,
+    githubUrl && `▶ GitHub: ${githubUrl}`,
     '',
-    hashtags.join(' '),
-  ]
-    .filter((l) => l !== null)
-    .join('\n');
+    (category || status || repo.language) && '📌 정보',
+    category && `- 카테고리: ${category}`,
+    status && `- 상태: ${status}`,
+    repo.language && `- 기술 스택: ${repo.language}`,
+    '',
+    '📌 태그',
+    allTags,
+    '',
+    '---',
+    "본 설명은 '칫허브(Chithub)'로 자동 생성되었습니다.",
+  ]);
 
-  const training = `${title}은 교사가 수업 목적에 맞게 직접 제작한 바이브코딩 기반 웹앱으로, ${useCase}을 지원하는 도구입니다. ${targetUsers}은(는) ${featureLine}을(를) 통해 자기 주도적인 학습 경험을 얻을 수 있습니다.`;
+  /* === 4) Training intro (structured) === */
+  const training = cleanLines([
+    `[ 연수자료용 소개 · ${title} ]`,
+    '',
+    `▸ 앱명: ${title}${titleEn && titleEn !== title ? ` (${titleEn})` : ''}`,
+    category && `▸ 카테고리: ${category}`,
+    `▸ 활용 대상: ${targetUsers}`,
+    `▸ 활용 장면: ${useCase}`,
+    status && `▸ 개발 상태: ${status}`,
+    '',
+    '1) 개발 배경',
+    `${title}은(는) ${targetUsers}과(와) 함께하는 ${useCase}을(를) 보다 풍부하게 만들기 위해 교사가 직접 제작한 바이브코딩 기반 웹앱입니다. ${shortDesc}`,
+    '',
+    '2) 주요 기능',
+    featureBullets,
+    '',
+    '3) 사용 방법',
+    url ? `• 아래 주소로 접속: ${url}` : '• 배포 페이지에 접속',
+    `• ${useCase} 흐름에 맞춰 ${targetUsers}와(과) 활동을 진행`,
+    '• 필요 시 하단의 GitHub 저장소에서 코드를 확인하거나 의견을 제안',
+    '',
+    '4) 기대 효과',
+    `${targetUsers}는(은) ${featureSummary} 등을 통해 자기 주도적인 학습 경험과 즉각적인 피드백을 얻을 수 있으며, 교사는 ${useCase}을(를) 보다 의미 있게 구성할 수 있습니다.`,
+    '',
+    '5) 참고 링크',
+    url && `• 배포 페이지: ${url}`,
+    githubUrl && `• 소스코드: ${githubUrl}`,
+    '',
+    '※ 본 자료는 칫허브(Chithub)에서 자동 생성되었으며, 필요에 맞게 수정해 활용하세요.',
+  ]);
 
+  /* === 5) Portfolio JSON (richer) === */
   const portfolio = JSON.stringify(
     {
       title,
       englishTitle: titleEn,
-      category: meta.category || '',
-      description: shortDesc,
+      category,
+      status,
+      shortDescription: shortDesc,
+      longDescription: longDesc,
+      targetUsers,
+      useCase,
       features,
+      tone,
       url,
       github: githubUrl,
+      language: repo.language || '',
+      stars: repo.stargazers_count || 0,
+      forks: repo.forks_count || 0,
       hashtags,
+      createdAt: repo.created_at || '',
+      updatedAt: repo.updated_at || '',
     },
     null,
     2
   );
 
-  const readme = [
-    `# ${title}`,
+  /* === 6) README (with badges + sections) === */
+  const badge = (label, value, color = 'blue') =>
+    value
+      ? `![${label}](https://img.shields.io/badge/${encodeURIComponent(label)}-${encodeURIComponent(value)}-${color})`
+      : '';
+  const readme = cleanLines([
+    `# ${title}${titleEn && titleEn !== title ? ` · ${titleEn}` : ''}`,
     '',
-    '## 소개',
-    longDesc || '소개 문구를 입력해주세요.',
+    `> ${shortDesc}`,
     '',
-    '## 주요 기능',
+    [
+      badge('category', category || '교육', 'brightgreen'),
+      badge('status', status || 'WIP', 'blue'),
+      badge('lang', repo.language || '-', 'lightgrey'),
+    ].filter(Boolean).join(' '),
+    '',
+    '## 📖 소개',
+    longDesc,
+    '',
+    '## ✨ 주요 기능',
     features.length ? features.map((f) => `- ${f}`).join('\n') : '- 기능을 입력해주세요.',
     '',
-    '## 활용 장면',
-    useCase,
+    '## 🎯 활용 대상 · 장면',
+    `- **대상**: ${targetUsers}`,
+    `- **장면**: ${useCase}`,
     '',
-    '## 배포 주소',
-    url || '배포 URL을 입력해주세요.',
-    '',
-    '## 기술 스택',
+    url ? '## 🚀 바로 사용하기' : null,
+    url ? `👉 [배포 페이지 열기](${url})` : null,
+    url ? '' : null,
+    '## 🛠 기술 스택',
     repo.language ? `- 주 언어: ${repo.language}` : '- 기술 스택을 입력해주세요.',
     '',
-    '## 제작자',
+    hashtags.length ? '## 🏷 태그' : null,
+    hashtags.length ? hashtags.join(' ') : null,
+    hashtags.length ? '' : null,
+    '## 👤 제작자',
     '교육뮤지컬 꿈꾸는 치수쌤',
-  ].join('\n');
+    '',
+    githubUrl ? `🔗 GitHub: ${githubUrl}` : null,
+    '',
+    '---',
+    "_본 README 초안은 '칫허브(Chithub)'로 자동 생성되었습니다._",
+  ]);
 
   return { oneLiner, sns, youtube, training, portfolio, readme };
 }
@@ -731,6 +915,7 @@ export default function App() {
         savedToken: saved.saveToken ? saved.savedToken || '' : '',
         gistId: saved.gistId || '',
         lastGistSyncAt: saved.lastGistSyncAt || '',
+        autoSync: saved.autoSync === undefined ? true : !!saved.autoSync,
       };
     }
     return {
@@ -741,6 +926,7 @@ export default function App() {
       savedToken: '',
       gistId: '',
       lastGistSyncAt: '',
+      autoSync: true,
     };
   });
 
@@ -768,7 +954,7 @@ export default function App() {
   const [filterVisibility, setFilterVisibility] = useState('');
   const [sortBy, setSortBy] = useState('updated');
   const [viewMode, setViewMode] = useState('card');
-  const [onboardCollapsed, setOnboardCollapsed] = useState(false);
+  const [onboardCollapsed, setOnboardCollapsed] = useState(true);
 
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
@@ -792,6 +978,7 @@ export default function App() {
       savedToken: settings.saveToken ? settings.savedToken || '' : '',
       gistId: settings.gistId || '',
       lastGistSyncAt: settings.lastGistSyncAt || '',
+      autoSync: settings.autoSync !== false,
     };
     writeJSON(STORAGE_KEYS.settings, toStore);
   }, [settings]);
@@ -892,7 +1079,12 @@ export default function App() {
   const updateMeta = (fullName, patch) => {
     setRepoMeta((prev) => ({
       ...prev,
-      [fullName]: { ...defaultRepoMeta(), ...(prev[fullName] || {}), ...patch },
+      [fullName]: {
+        ...defaultRepoMeta(),
+        ...(prev[fullName] || {}),
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      },
     }));
   };
 
@@ -1074,17 +1266,27 @@ export default function App() {
   /* --- gist sync --- */
   const effectiveToken = tokenInput || (settings.saveToken ? settings.savedToken : '');
 
-  const handlePushToGist = async () => {
+  const pullInProgressRef = useRef(false);
+  const lastPushedSnapshotRef = useRef(null);
+  const autoPullDoneRef = useRef(false);
+  const pushTimerRef = useRef(null);
+  const repoMetaRef = useRef(repoMeta);
+  useEffect(() => {
+    repoMetaRef.current = repoMeta;
+  }, [repoMeta]);
+
+  const handlePushToGist = useCallback(async (silent = false) => {
     if (!effectiveToken) {
-      push('토큰을 입력해야 Gist에 업로드할 수 있습니다.', 'error');
+      if (!silent) push('토큰을 입력해야 Gist에 업로드할 수 있습니다.', 'error');
       return;
     }
     setGistSyncing(true);
     try {
+      const metaSnapshot = repoMetaRef.current;
       const payload = {
         exportedAt: new Date().toISOString(),
         app: 'chithub',
-        version: 1,
+        version: 2,
         settings: {
           language: settings.language,
           savedUsername: settings.savedUsername || '',
@@ -1092,32 +1294,44 @@ export default function App() {
           savedToken: '',
           gistId: settings.gistId || '',
         },
-        repoMeta,
+        repoMeta: metaSnapshot,
       };
       const gist = await apiPushGist(effectiveToken, settings.gistId || '', payload);
+      lastPushedSnapshotRef.current = JSON.stringify(metaSnapshot);
       setSettings((s) => ({
         ...s,
         gistId: gist.id,
         lastGistSyncAt: new Date().toISOString(),
       }));
-      push(`Gist에 업로드했습니다. ID: ${gist.id}`, 'success');
+      if (silent) {
+        push(t(settings.language, 'autoPushToast'), 'success');
+      } else {
+        push(`Gist에 업로드했습니다. ID: ${gist.id}`, 'success');
+      }
     } catch (err) {
       push(err?.message || 'Gist 업로드 중 오류가 발생했습니다.', 'error');
     } finally {
       setGistSyncing(false);
     }
-  };
+  }, [effectiveToken, settings.gistId, settings.language, settings.savedUsername, push]);
 
-  const handlePullFromGist = async (gistId) => {
+  const handlePullFromGist = useCallback(async (gistId, { silent = false } = {}) => {
     if (!gistId) {
-      push('Gist ID를 입력해주세요.', 'error');
+      if (!silent) push('Gist ID를 입력해주세요.', 'error');
       return;
     }
     setGistSyncing(true);
+    pullInProgressRef.current = true;
+    autoPullDoneRef.current = true;
     try {
       const data = await apiPullGist(effectiveToken, gistId);
       if (data.repoMeta && typeof data.repoMeta === 'object') {
-        setRepoMeta((prev) => ({ ...prev, ...data.repoMeta }));
+        const merged = mergeRepoMetaByTime(repoMetaRef.current, data.repoMeta);
+        setRepoMeta(merged);
+        repoMetaRef.current = merged;
+        lastPushedSnapshotRef.current = JSON.stringify(merged);
+      } else {
+        lastPushedSnapshotRef.current = JSON.stringify(repoMetaRef.current);
       }
       setSettings((s) => ({
         ...s,
@@ -1126,13 +1340,39 @@ export default function App() {
         ...(data.settings?.language ? { language: data.settings.language } : {}),
         ...(data.settings?.savedUsername ? { savedUsername: data.settings.savedUsername } : {}),
       }));
-      push('Gist에서 데이터를 내려받았습니다.', 'success');
+      push(silent ? t(settings.language, 'autoPullToast') : 'Gist에서 데이터를 내려받았습니다.', 'success');
     } catch (err) {
-      push(err?.message || 'Gist 내려받기 중 오류가 발생했습니다.', 'error');
+      if (!silent) push(err?.message || 'Gist 내려받기 중 오류가 발생했습니다.', 'error');
     } finally {
       setGistSyncing(false);
+      // release pull flag on next tick so debounced push effect ignores the merge update
+      setTimeout(() => { pullInProgressRef.current = false; }, 0);
     }
-  };
+  }, [effectiveToken, settings.language, push]);
+
+  /* auto-pull once on mount when gistId + token + autoSync are all available */
+  useEffect(() => {
+    if (autoPullDoneRef.current) return;
+    if (!settings.autoSync) return;
+    if (!settings.gistId || !effectiveToken) return;
+    autoPullDoneRef.current = true;
+    handlePullFromGist(settings.gistId, { silent: true });
+  }, [settings.autoSync, settings.gistId, effectiveToken, handlePullFromGist]);
+
+  /* debounced auto-push when repoMeta changes (only after a successful sync baseline exists) */
+  useEffect(() => {
+    if (!settings.autoSync) return;
+    if (!settings.gistId || !effectiveToken) return;
+    if (pullInProgressRef.current) return;
+    if (lastPushedSnapshotRef.current === null) return; // require initial sync first
+    const snapshot = JSON.stringify(repoMeta);
+    if (snapshot === lastPushedSnapshotRef.current) return;
+    clearTimeout(pushTimerRef.current);
+    pushTimerRef.current = setTimeout(() => {
+      handlePushToGist(true);
+    }, 4000);
+    return () => clearTimeout(pushTimerRef.current);
+  }, [repoMeta, settings.autoSync, settings.gistId, effectiveToken, handlePushToGist]);
 
   /* --- editing repo data --- */
   const currentEditingMeta = editingRepo ? getMeta(editingRepo) : null;
@@ -1430,21 +1670,38 @@ export default function App() {
               </div>
             </div>
 
-            {/* 3행: 백업 / 다운로드 + 결과 수 */}
+            {/* 3행: 데이터 관리 + 결과 수 */}
             <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
-              <button className="btn-secondary text-xs py-1.5" onClick={exportBackup}>
-                <Download className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t(lang, 'backup')}</span>
-                <span className="sm:hidden">백업</span>
-              </button>
-              <button
-                className="btn-secondary text-xs py-1.5"
-                onClick={() => fileInputRef.current?.click()}
+              <DropdownMenu
+                label={t(lang, 'dataMenu')}
+                icon={<MoreHorizontal className="w-3.5 h-3.5" />}
               >
-                <Upload className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t(lang, 'restore')}</span>
-                <span className="sm:hidden">복원</span>
-              </button>
+                <MenuItem
+                  icon={<Download className="w-4 h-4" />}
+                  label={t(lang, 'backup')}
+                  hint="현재 데이터를 JSON 파일로 저장"
+                  onClick={exportBackup}
+                />
+                <MenuItem
+                  icon={<Upload className="w-4 h-4" />}
+                  label={t(lang, 'restore')}
+                  hint="JSON 백업 파일에서 복원"
+                  onClick={() => fileInputRef.current?.click()}
+                />
+                <div className="my-1 border-t border-slate-100" />
+                <MenuItem
+                  icon={<FileSpreadsheet className="w-4 h-4" />}
+                  label="CSV 다운로드"
+                  hint="앱 목록을 표 형식으로 저장"
+                  onClick={exportCsv}
+                />
+                <MenuItem
+                  icon={<Megaphone className="w-4 h-4" />}
+                  label={t(lang, 'promoCsv')}
+                  hint="홍보 문구를 일괄 다운로드"
+                  onClick={exportPromoCsv}
+                />
+              </DropdownMenu>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1456,14 +1713,11 @@ export default function App() {
                 }}
                 className="hidden"
               />
-              <button className="btn-secondary text-xs py-1.5" onClick={exportCsv}>
-                <Download className="w-3.5 h-3.5" /> CSV
-              </button>
-              <button className="btn-secondary text-xs py-1.5" onClick={exportPromoCsv}>
-                <Sparkles className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t(lang, 'promoCsv')}</span>
-                <span className="sm:hidden">홍보 CSV</span>
-              </button>
+              {settings.autoSync && settings.gistId && effectiveToken && (
+                <span className="inline-flex items-center gap-1 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
+                  <Cloud className="w-3 h-3" /> 자동 동기화
+                </span>
+              )}
               <span className="text-slate-500 ml-auto whitespace-nowrap">
                 결과 <strong className="text-slate-700">{filtered.length}</strong>개
               </span>
@@ -1735,8 +1989,9 @@ export default function App() {
           onClose={() => setShowSettingsPanel(false)}
           gistSyncing={gistSyncing}
           hasToken={!!effectiveToken}
-          onPushGist={handlePushToGist}
-          onPullGist={handlePullFromGist}
+          onPushGist={() => handlePushToGist(false)}
+          onPullGist={(id) => handlePullFromGist(id)}
+          onToggleAutoSync={(v) => setSettings((s) => ({ ...s, autoSync: !!v }))}
           onCopyGistId={async (id) => {
             const ok = await copyToClipboard(id);
             push(ok ? 'Gist ID를 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
@@ -1773,6 +2028,67 @@ function StatCard({ label, value, icon }) {
       </div>
       <div className="mt-1 text-2xl font-bold text-slate-900">{value}</div>
     </div>
+  );
+}
+
+function DropdownMenu({ label, icon, children, align = 'left' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', onDoc);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDoc);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        className="btn-secondary text-xs py-1.5"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {icon}
+        <span>{label}</span>
+        <ChevronDown className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className={`absolute z-30 mt-1.5 min-w-[200px] bg-white border border-slate-200 rounded-xl shadow-card py-1 ${
+            align === 'right' ? 'right-0' : 'left-0'
+          }`}
+          onClick={() => setOpen(false)}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({ icon, label, onClick, hint }) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      className="w-full text-left flex items-start gap-2.5 px-3 py-2 hover:bg-slate-50"
+      onClick={onClick}
+    >
+      <span className="mt-0.5 text-slate-500 shrink-0">{icon}</span>
+      <span className="flex-1 min-w-0">
+        <span className="block text-sm font-medium text-slate-800">{label}</span>
+        {hint && <span className="block text-xs text-slate-500 mt-0.5">{hint}</span>}
+      </span>
+    </button>
   );
 }
 
@@ -2309,7 +2625,7 @@ function HelpModal({ lang, onClose }) {
 
 function SettingsModal({
   lang, settings, onChangeLang, onResetUsername, onDeleteToken, onClose,
-  gistSyncing, hasToken, onPushGist, onPullGist, onCopyGistId,
+  gistSyncing, hasToken, onPushGist, onPullGist, onCopyGistId, onToggleAutoSync,
 }) {
   const [localGistId, setLocalGistId] = useState(settings.gistId || '');
 
@@ -2429,6 +2745,37 @@ function SettingsModal({
                 : <CloudDownload className="w-4 h-4" />}
               {t(lang, 'gistDownload')}
             </button>
+          </div>
+
+          {/* Auto sync toggle */}
+          <div className="rounded-lg bg-white border border-slate-200 p-3">
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1 rounded border-slate-300"
+                checked={settings.autoSync !== false}
+                onChange={(e) => onToggleAutoSync(e.target.checked)}
+              />
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-semibold text-slate-800">
+                  {t(lang, 'autoSyncTitle')}
+                </span>
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  {t(lang, 'autoSyncDesc')}
+                </span>
+                <span className={`mt-1.5 inline-flex items-center gap-1 text-xs ${
+                  settings.autoSync !== false && hasToken && settings.gistId
+                    ? 'text-emerald-700'
+                    : 'text-slate-500'
+                }`}>
+                  {settings.autoSync !== false && hasToken && settings.gistId ? (
+                    <><CheckCircle2 className="w-3.5 h-3.5" /> {t(lang, 'autoSyncEnabled')}</>
+                  ) : (
+                    <><Info className="w-3.5 h-3.5" /> {t(lang, 'autoSyncDisabled')}</>
+                  )}
+                </span>
+              </span>
+            </label>
           </div>
 
           {settings.lastGistSyncAt && (
