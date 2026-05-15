@@ -684,9 +684,20 @@ async function callGemini(apiKey, prompt) {
 }
 
 function extractJson(text) {
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다.');
-  return JSON.parse(match[0]);
+  // Gemini가 ```json ... ``` 형식으로 감쌀 때 펜스 제거
+  let src = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
+  if (!src) src = text.trim();
+  // 첫 { ~ 마지막 } 구간 추출
+  const start = src.indexOf('{');
+  const end = src.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('AI가 올바른 형식으로 응답하지 않았습니다. 다시 시도해주세요.');
+  }
+  try {
+    return JSON.parse(src.slice(start, end + 1));
+  } catch {
+    throw new Error('AI 응답 파싱에 실패했습니다. 다시 시도해주세요.');
+  }
 }
 
 /* ============================================================
@@ -2127,9 +2138,9 @@ export default function App() {
         />
       )}
 
-      {/* 숨겨진 관리자 트리거 — 우측 하단 모서리, 3초 꾹 누르기 */}
+      {/* 관리자 트리거 — 우측 하단, 호버 시 희미한 아이콘, 3초 꾹 누르기 */}
       <div
-        className="fixed bottom-0 right-0 w-10 h-10 z-40 select-none"
+        className="fixed bottom-2 right-2 w-8 h-8 z-40 select-none flex items-center justify-center rounded-full opacity-0 hover:opacity-20 active:opacity-40 transition-opacity duration-300 cursor-default"
         onMouseDown={handleAdminPressStart}
         onMouseUp={handleAdminPressEnd}
         onMouseLeave={handleAdminPressEnd}
@@ -2137,7 +2148,9 @@ export default function App() {
         onTouchEnd={handleAdminPressEnd}
         onTouchCancel={handleAdminPressEnd}
         aria-hidden="true"
-      />
+      >
+        <Lock className="w-4 h-4 text-slate-500" />
+      </div>
 
       {/* 관리자 비밀번호 다이얼로그 */}
       {adminPromptOpen && (
@@ -2631,40 +2644,35 @@ JSON만 출력하고 다른 텍스트는 절대 포함하지 마세요.`;
       onClose={onClose}
       wide
       footer={
-        <div className="flex justify-between items-center gap-2 flex-wrap">
-          <button className="btn-ghost" onClick={onOpenPromo}>
-            <Sparkles className="w-4 h-4" /> {t(lang, 'generatePromo')}
-          </button>
-          <div className="flex gap-2 ml-auto">
-            <button className="btn-secondary" onClick={onClose}>{t(lang, 'cancel')}</button>
-            <button className="btn-primary" onClick={handleSave}>
-              <Save className="w-4 h-4" /> {t(lang, 'save')}
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* AI 자동채우기 */}
+            <button
+              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5"
+              onClick={handleAIFill}
+              disabled={aiLoading || !geminiApiKey}
+              title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : 'AI로 모든 필드 자동채우기'}
+            >
+              {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {aiLoading ? 'AI 분석 중...' : 'AI 자동채우기'}
             </button>
+            <button className="btn-ghost" onClick={onOpenPromo}>
+              <Sparkles className="w-4 h-4" /> {t(lang, 'generatePromo')}
+            </button>
+            <div className="flex gap-2 ml-auto">
+              <button className="btn-secondary" onClick={onClose}>{t(lang, 'cancel')}</button>
+              <button className="btn-primary" onClick={handleSave}>
+                <Save className="w-4 h-4" /> {t(lang, 'save')}
+              </button>
+            </div>
           </div>
+          {aiError && (
+            <p className="text-xs text-red-600 pl-0.5">{aiError}</p>
+          )}
         </div>
       }
     >
       <div className="space-y-6">
-        {/* AI 자동채우기 배너 */}
-        <div className="rounded-xl border border-purple-200 bg-purple-50 p-3 flex flex-wrap items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-purple-900">✨ AI 자동채우기</p>
-            <p className="text-xs text-purple-700 mt-0.5">
-              리포지토리 이름과 설명을 분석해 모든 필드를 자동으로 채워드립니다.
-              {!geminiApiKey && <span className="font-semibold"> · 설정에서 Gemini API 키를 먼저 입력해주세요.</span>}
-            </p>
-            {aiError && <p className="text-xs text-red-600 mt-1">{aiError}</p>}
-          </div>
-          <button
-            className="shrink-0 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
-            onClick={handleAIFill}
-            disabled={aiLoading || !geminiApiKey}
-          >
-            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {aiLoading ? 'AI 분석 중...' : 'AI로 자동채우기'}
-          </button>
-        </div>
-
         <section>
           <h4 className="font-bold text-slate-900 mb-2 flex items-center gap-2">
             <Info className="w-4 h-4 text-brand-600" /> 1. 기본 정보
