@@ -406,7 +406,8 @@ const mergeRepoMetaByTime = (local, remote) => {
     } else if (!r) {
       result[k] = l;
     } else {
-      result[k] = metaTimestamp(r) > metaTimestamp(l) ? r : l;
+      // remote wins on tie (both timestamp 0) — user explicitly pulling from Gist
+      result[k] = metaTimestamp(r) >= metaTimestamp(l) ? r : l;
     }
   });
   return result;
@@ -1340,7 +1341,26 @@ export default function App() {
         ...(data.settings?.language ? { language: data.settings.language } : {}),
         ...(data.settings?.savedUsername ? { savedUsername: data.settings.savedUsername } : {}),
       }));
-      push(silent ? t(settings.language, 'autoPullToast') : 'Gist에서 데이터를 내려받았습니다.', 'success');
+      const successMsg = silent ? t(settings.language, 'autoPullToast') : 'Gist에서 데이터를 내려받았습니다.';
+      push(successMsg, 'success');
+
+      // If repos aren't loaded yet but we have a savedUsername from the pulled settings,
+      // automatically fetch repos so the synced metadata is immediately visible.
+      const pulledUsername = data.settings?.savedUsername;
+      if (!silent && pulledUsername) {
+        // reuse the existing loadPublic logic via a lightweight fetch
+        try {
+          setLoadingRepos(true);
+          const repoData = await fetchPublicRepos(pulledUsername);
+          setRepos(Array.isArray(repoData) ? repoData : []);
+          setLastSyncedAt(new Date().toISOString());
+          push(`리포지토리 ${repoData.length}개도 함께 불러왔습니다.`, 'success');
+        } catch {
+          push('리포지토리 자동 로드에 실패했습니다. 상단에서 직접 불러와주세요.', 'error');
+        } finally {
+          setLoadingRepos(false);
+        }
+      }
     } catch (err) {
       if (!silent) push(err?.message || 'Gist 내려받기 중 오류가 발생했습니다.', 'error');
     } finally {
