@@ -649,6 +649,44 @@ async function apiPullGist(token, gistId) {
 }
 
 /* ============================================================
+   Gemini AI API (free tier)
+============================================================ */
+
+async function callGemini(apiKey, prompt) {
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+      }),
+    }
+  );
+  if (!res.ok) {
+    let errMsg = `Gemini API 오류 (HTTP ${res.status})`;
+    try {
+      const errData = await res.json();
+      if (errData?.error?.message) errMsg = errData.error.message;
+    } catch { /* ignore */ }
+    if (res.status === 400) errMsg = 'API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.';
+    if (res.status === 429) errMsg = 'Gemini 무료 한도에 도달했습니다. 잠시 후 다시 시도해주세요.';
+    throw new Error(errMsg);
+  }
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
+  return text;
+}
+
+function extractJson(text) {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('AI 응답에서 JSON을 찾을 수 없습니다.');
+  return JSON.parse(match[0]);
+}
+
+/* ============================================================
    Status / category styling
 ============================================================ */
 
@@ -941,6 +979,7 @@ export default function App() {
         gistId: saved.gistId || '',
         lastGistSyncAt: saved.lastGistSyncAt || '',
         autoSync: saved.autoSync === undefined ? true : !!saved.autoSync,
+        geminiApiKey: saved.geminiApiKey || '',
       };
     }
     return {
@@ -952,6 +991,7 @@ export default function App() {
       gistId: '',
       lastGistSyncAt: '',
       autoSync: true,
+      geminiApiKey: '',
     };
   });
 
@@ -1004,6 +1044,7 @@ export default function App() {
       gistId: settings.gistId || '',
       lastGistSyncAt: settings.lastGistSyncAt || '',
       autoSync: settings.autoSync !== false,
+      geminiApiKey: settings.geminiApiKey || '',
     };
     writeJSON(STORAGE_KEYS.settings, toStore);
   }, [settings]);
@@ -1994,6 +2035,7 @@ export default function App() {
             setPromoRepo(editingRepo);
             setEditingRepo(null);
           }}
+          geminiApiKey={settings.geminiApiKey}
         />
       )}
 
@@ -2012,6 +2054,7 @@ export default function App() {
             downloadBlob(filename, content, mime);
             push(`${filename} 파일을 내려받았습니다.`, 'success');
           }}
+          geminiApiKey={settings.geminiApiKey}
         />
       )}
 
@@ -2039,6 +2082,10 @@ export default function App() {
           onCopyGistId={async (id) => {
             const ok = await copyToClipboard(id);
             push(ok ? 'Gist ID를 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
+          }}
+          onSaveGeminiKey={(key) => {
+            setSettings((s) => ({ ...s, geminiApiKey: key.trim() }));
+            push(key.trim() ? 'Gemini API 키를 저장했습니다. AI 기능을 사용할 수 있습니다.' : 'API 키를 삭제했습니다.', 'success');
           }}
         />
       )}
@@ -2363,7 +2410,7 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
    EditModal
 ============================================================ */
 
-function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo }) {
+function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey }) {
   const [form, setForm] = useState(() => ({
     ...defaultRepoMeta(),
     ...meta,
@@ -2372,6 +2419,8 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo 
   }));
   const [featuresInput, setFeaturesInput] = useState((meta?.features || []).join(', '));
   const [hashtagsInput, setHashtagsInput] = useState((meta?.hashtags || []).join(', '));
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -2385,6 +2434,57 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo 
       .map((s) => s.trim().replace(/^#/, ''))
       .filter(Boolean);
     onSave({ ...form, features, hashtags });
+  };
+
+  const handleAIFill = async () => {
+    if (!geminiApiKey) {
+      setAiError('설정에서 Gemini API 키를 먼저 입력해주세요.');
+      return;
+    }
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const prompt = `당신은 한국 교사가 만든 교육용 GitHub 웹앱을 분석하는 AI 비서입니다.
+아래 리포지토리 정보를 보고 교사용 교육 앱 메타데이터를 추론해 JSON으로 반환하세요.
+
+[리포지토리 정보]
+- 이름: ${repo.name}
+- GitHub 설명: ${repo.description || '없음'}
+- 기술 스택: ${repo.language || '불명'}
+- URL: ${repo.html_url}
+
+[작성 규칙]
+- appTitleKr: 한글 앱 이름 (자연스럽게)
+- appTitleEn: 영문 앱 이름 (간결하게)
+- shortDescription: 한 줄 설명 (40자 이내)
+- longDescription: 상세 설명 (150자 이내, 교육적 가치 강조)
+- category: 다음 중 정확히 하나 선택: 교육뮤지컬, 국제교류, 학급운영, 문해력, 창작도구, 평가·피드백, 에듀테크, 자료정리, 기타
+- targetUsers: 주 사용 대상 (예: 초등학생, 교사, 학부모)
+- useCase: 주 활용 장면 (예: 국어 수업, 학급 운영, 교사 연수)
+- features: 주요 기능 목록 (3~5개, 배열)
+- hashtags: 관련 해시태그 (5~8개, # 없이, 배열)
+
+JSON만 출력하고 다른 텍스트는 절대 포함하지 마세요.`;
+      const text = await callGemini(geminiApiKey, prompt);
+      const data = extractJson(text);
+      if (data.appTitleKr) set('appTitleKr', data.appTitleKr);
+      if (data.appTitleEn) set('appTitleEn', data.appTitleEn);
+      if (data.shortDescription) set('shortDescription', data.shortDescription);
+      if (data.longDescription) set('longDescription', data.longDescription);
+      if (data.category) set('category', data.category);
+      if (data.targetUsers) set('targetUsers', data.targetUsers);
+      if (data.useCase) set('useCase', data.useCase);
+      if (Array.isArray(data.features) && data.features.length) {
+        setFeaturesInput(data.features.join(', '));
+      }
+      if (Array.isArray(data.hashtags) && data.hashtags.length) {
+        setHashtagsInput(data.hashtags.join(', '));
+      }
+    } catch (err) {
+      setAiError(err?.message || 'AI 자동채우기 중 오류가 발생했습니다.');
+    } finally {
+      setAiLoading(false);
+    }
   };
 
   return (
@@ -2407,6 +2507,26 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo 
       }
     >
       <div className="space-y-6">
+        {/* AI 자동채우기 배너 */}
+        <div className="rounded-xl border border-purple-200 bg-purple-50 p-3 flex flex-wrap items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-purple-900">✨ AI 자동채우기</p>
+            <p className="text-xs text-purple-700 mt-0.5">
+              리포지토리 이름과 설명을 분석해 모든 필드를 자동으로 채워드립니다.
+              {!geminiApiKey && <span className="font-semibold"> · 설정에서 Gemini API 키를 먼저 입력해주세요.</span>}
+            </p>
+            {aiError && <p className="text-xs text-red-600 mt-1">{aiError}</p>}
+          </div>
+          <button
+            className="shrink-0 px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-2"
+            onClick={handleAIFill}
+            disabled={aiLoading || !geminiApiKey}
+          >
+            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {aiLoading ? 'AI 분석 중...' : 'AI로 자동채우기'}
+          </button>
+        </div>
+
         <section>
           <h4 className="font-bold text-slate-900 mb-2 flex items-center gap-2">
             <Info className="w-4 h-4 text-brand-600" /> 1. 기본 정보
@@ -2546,9 +2666,13 @@ function Field({ label, children, full }) {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
+  const [aiPromo, setAiPromo] = useState({});
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [showAi, setShowAi] = useState(false);
 
   const tabs = [
     { id: 'oneLiner', label: t(lang, 'promoOneLiner'), content: promo.oneLiner, ext: 'txt', mime: 'text/plain' },
@@ -2562,60 +2686,162 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload }) {
   const active = tabs.find((tb) => tb.id === tab);
   const baseName = (meta.appTitleEn || repo.name || 'chithub').toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 
+  const hasAiContent = Object.keys(aiPromo).length > 0;
+  const activeContent = (showAi && hasAiContent && aiPromo[tab]) ? aiPromo[tab] : active.content;
+
+  const handleAIGenerate = async () => {
+    if (!geminiApiKey) {
+      setAiError('설정에서 Gemini API 키를 먼저 입력해주세요.');
+      return;
+    }
+    setAiLoading(true);
+    setAiError('');
+    try {
+      const title = (meta.appTitleKr || repo.name || '').trim();
+      const titleEn = (meta.appTitleEn || repo.name || '').trim();
+      const shortDesc = (meta.shortDescription || repo.description || '교육 활동에 활용할 수 있는 웹앱').trim();
+      const longDesc = (meta.longDescription || shortDesc).trim();
+      const features = (meta.features || []).filter(Boolean);
+      const targetUsers = (meta.targetUsers || '학생과 교사').trim();
+      const useCase = (meta.useCase || '수업 및 연수 활동').trim();
+      const category = (meta.category || '에듀테크').trim();
+      const tone = meta.promotionTone || '친근함';
+      const url = getDeploymentUrl(repo, meta).url;
+      const githubUrl = repo.html_url || '';
+      const hashtags = (meta.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`));
+
+      const prompt = `당신은 한국 교사가 만든 교육용 웹앱의 전문 홍보 카피라이터입니다.
+아래 앱 정보를 바탕으로 각 형식에 맞는 고품질 홍보문을 한국어로 작성해주세요.
+
+[앱 정보]
+- 이름: ${title} (${titleEn})
+- 한 줄 설명: ${shortDesc}
+- 상세 설명: ${longDesc}
+- 카테고리: ${category}
+- 활용 대상: ${targetUsers}
+- 활용 장면: ${useCase}
+- 주요 기능: ${features.join(', ') || '(정보 없음)'}
+- 해시태그: ${hashtags.join(' ') || '#에듀테크 #교육'}
+- 배포 URL: ${url || '(없음)'}
+- GitHub URL: ${githubUrl}
+- 홍보 톤: ${tone}
+
+다음 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
+{
+  "oneLiner": "한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)",
+  "sns": "SNS 게시글 (이모지·줄바꿈·해시태그 포함, 자연스러운 소셜미디어 문체)",
+  "youtube": "유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)",
+  "training": "연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)",
+  "readme": "README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식, 배지 포함)"
+}`;
+
+      const text = await callGemini(geminiApiKey, prompt);
+      const data = extractJson(text);
+      setAiPromo({
+        oneLiner: data.oneLiner || '',
+        sns: data.sns || '',
+        youtube: data.youtube || '',
+        training: data.training || '',
+        json: promo.portfolio,
+        readme: data.readme || '',
+      });
+      setShowAi(true);
+    } catch (err) {
+      setAiError(err?.message || 'AI 생성 중 오류가 발생했습니다.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   return (
     <Modal
       title={`${t(lang, 'promoH1')} · ${repo.full_name}`}
       onClose={onClose}
       wide
       footer={
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <button className="btn-secondary" onClick={() => onCopy(active.content)}>
-            <Copy className="w-4 h-4" /> {t(lang, 'copy')}
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* AI 원클릭 생성 */}
           <button
-            className="btn-secondary"
-            onClick={() => onDownload(`${baseName}-${active.id}.txt`, active.content, 'text/plain')}
+            className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+            onClick={handleAIGenerate}
+            disabled={aiLoading || !geminiApiKey}
+            title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : undefined}
           >
-            <Download className="w-4 h-4" /> TXT
+            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {aiLoading ? 'AI 생성 중...' : 'AI 원클릭 생성'}
           </button>
-          <button
-            className="btn-secondary"
-            onClick={() => onDownload(`${baseName}-${active.id}.md`, active.content, 'text/markdown')}
-          >
-            <Download className="w-4 h-4" /> MD
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, active.content, active.mime)}
-          >
-            <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
-          </button>
+          {hasAiContent && (
+            <button
+              className={`px-3 py-2 rounded-lg text-sm font-semibold border flex items-center gap-1.5 shrink-0 ${
+                showAi
+                  ? 'bg-purple-100 text-purple-700 border-purple-300'
+                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+              }`}
+              onClick={() => setShowAi((v) => !v)}
+            >
+              {showAi ? '✨ AI 보기 중' : '📋 템플릿 보기 중'}
+            </button>
+          )}
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <button className="btn-secondary" onClick={() => onCopy(activeContent)}>
+              <Copy className="w-4 h-4" /> {t(lang, 'copy')}
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, activeContent, active.mime)}
+            >
+              <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
+            </button>
+          </div>
         </div>
       }
     >
+      {/* AI 안내 배너 */}
+      {!geminiApiKey && (
+        <div className="mb-3 rounded-lg bg-purple-50 border border-purple-200 text-purple-800 text-xs p-2.5 flex items-center gap-2">
+          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+          설정에서 <strong>Gemini API 키</strong>를 입력하면 AI가 더 자연스러운 홍보글을 생성해 드립니다. (무료)
+        </div>
+      )}
+      {aiError && (
+        <div className="mb-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs p-2.5">
+          {aiError}
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-1.5 mb-3">
         {tabs.map((tb) => (
           <button
             key={tb.id}
             onClick={() => setTab(tb.id)}
-            className={`px-3 py-1.5 rounded-full text-sm border ${
+            className={`px-3 py-1.5 rounded-full text-sm border flex items-center gap-1 ${
               tab === tb.id ? 'bg-brand-600 text-white border-brand-600' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
             }`}
             aria-pressed={tab === tb.id}
           >
             {tb.label}
+            {showAi && hasAiContent && aiPromo[tb.id] && (
+              <span className="text-[10px] bg-purple-200 text-purple-800 rounded-full px-1">AI</span>
+            )}
           </button>
         ))}
       </div>
       <textarea
         readOnly
-        className="input font-mono text-xs min-h-[260px] w-full"
-        value={active.content}
+        className={`input font-mono text-xs min-h-[260px] w-full ${showAi && hasAiContent && aiPromo[tab] ? 'border-purple-300 bg-purple-50/30' : ''}`}
+        value={activeContent}
         aria-label={active.label}
       />
-      <p className="text-xs text-slate-500 mt-2">
-        편집 화면에서 더 자세한 정보를 입력할수록 홍보 자료의 품질이 좋아집니다.
-      </p>
+      {showAi && hasAiContent && aiPromo[tab] && (
+        <p className="text-xs text-purple-600 mt-1.5 flex items-center gap-1">
+          <Sparkles className="w-3 h-3" /> AI가 생성한 홍보글입니다. 내용을 확인 후 복사하세요.
+        </p>
+      )}
+      {(!showAi || !hasAiContent) && (
+        <p className="text-xs text-slate-500 mt-2">
+          편집 화면에서 더 자세한 정보를 입력할수록 홍보 자료의 품질이 좋아집니다.
+        </p>
+      )}
     </Modal>
   );
 }
@@ -2670,12 +2896,19 @@ function HelpModal({ lang, onClose }) {
 function SettingsModal({
   lang, settings, onChangeLang, onResetUsername, onDeleteToken, onClose,
   gistSyncing, hasToken, onPushGist, onPullGist, onCopyGistId, onToggleAutoSync,
+  onSaveGeminiKey,
 }) {
   const [localGistId, setLocalGistId] = useState(settings.gistId || '');
+  const [localGeminiKey, setLocalGeminiKey] = useState(settings.geminiApiKey || '');
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
 
   useEffect(() => {
     setLocalGistId(settings.gistId || '');
   }, [settings.gistId]);
+
+  useEffect(() => {
+    setLocalGeminiKey(settings.geminiApiKey || '');
+  }, [settings.geminiApiKey]);
 
   return (
     <Modal title={t(lang, 'settings')} onClose={onClose}>
@@ -2846,6 +3079,66 @@ function SettingsModal({
             <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-brand-600" />
             {t(lang, 'gistScopeHint')}
           </p>
+        </section>
+
+        {/* AI 설정 */}
+        <section className="rounded-xl border border-purple-200 bg-purple-50/40 p-4 space-y-3">
+          <div>
+            <h4 className="font-bold text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-600" /> AI 자동 생성 (무료)
+            </h4>
+            <p className="text-xs text-slate-600 mt-1">
+              Google Gemini API 키를 입력하면 편집 탭 자동채우기와 AI 홍보글 생성을 <strong>완전 무료</strong>로 사용할 수 있습니다.
+              (하루 최대 100만 토큰 무료, 신용카드 불필요)
+            </p>
+          </div>
+          <div>
+            <label className="label text-xs" htmlFor="gemini-key-input">Gemini API Key</label>
+            <div className="flex gap-2">
+              <input
+                id="gemini-key-input"
+                type={showGeminiKey ? 'text' : 'password'}
+                className="input text-xs font-mono flex-1"
+                value={localGeminiKey}
+                onChange={(e) => setLocalGeminiKey(e.target.value)}
+                placeholder="AIzaSy..."
+                spellCheck="false"
+                autoComplete="off"
+              />
+              <button
+                className="btn-ghost text-xs shrink-0 py-1.5"
+                onClick={() => setShowGeminiKey((v) => !v)}
+                aria-label={showGeminiKey ? '키 숨기기' : '키 보기'}
+              >
+                {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+              <button
+                className="btn-primary text-xs shrink-0 py-1.5"
+                onClick={() => onSaveGeminiKey(localGeminiKey)}
+              >
+                <Save className="w-3.5 h-3.5" /> 저장
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 mt-1.5 space-y-0.5">
+              <span className="block">
+                👉 <a
+                  href="https://aistudio.google.com/app/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-purple-600 underline"
+                >
+                  Google AI Studio
+                </a>에서 무료 API 키 발급 → "Get API key" → "Create API key"
+              </span>
+              <span className="block text-slate-400">API 키는 이 브라우저 localStorage에만 저장됩니다.</span>
+            </p>
+          </div>
+          {settings.geminiApiKey && (
+            <div className="flex items-center gap-2 text-xs text-emerald-700">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              API 키가 저장되어 있습니다. 편집 탭과 홍보 모달에서 AI 기능을 사용할 수 있습니다.
+            </div>
+          )}
         </section>
 
         {/* 참고 */}
