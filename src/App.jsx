@@ -40,6 +40,8 @@ import {
   ChevronDown,
   FileSpreadsheet,
   Megaphone,
+  Clock,
+  BookOpen,
 } from 'lucide-react';
 
 /* ============================================================
@@ -559,6 +561,18 @@ async function fetchMyRepos(token) {
   return res.json();
 }
 
+async function fetchGithubReadme(fullName, token) {
+  const headers = { Accept: 'application/vnd.github+json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`https://api.github.com/repos/${fullName}/readme`, { headers });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (data.encoding === 'base64' && data.content) {
+    return atob(data.content.replace(/\n/g, ''));
+  }
+  return null;
+}
+
 async function fetchRecentCommits(fullName, token) {
   const headers = { Accept: 'application/vnd.github+json' };
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -678,7 +692,9 @@ async function callGemini(apiKey, prompt) {
     throw new Error(errMsg);
   }
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+  // Gemini 2.5 Flash includes thinking parts (thought: true) before the actual response
+  const parts = data.candidates?.[0]?.content?.parts || [];
+  const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim() || parts[0]?.text;
   if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
   return text;
 }
@@ -2103,6 +2119,7 @@ export default function App() {
             push(`${filename} 파일을 내려받았습니다.`, 'success');
           }}
           geminiApiKey={settings.geminiApiKey}
+          token={effectiveToken}
         />
       )}
 
@@ -2393,12 +2410,32 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
 
   return (
     <article className="card p-4 sm:p-5 flex flex-col h-full">
-      {/* 리포지토리 경로 + 공개/아카이브 표시 */}
+      {/* 리포지토리 경로 + 공개/아카이브 표시 + 액션 아이콘 */}
       <div className="flex items-center gap-1.5 text-xs text-slate-500 min-w-0">
         <Github className="w-3.5 h-3.5 shrink-0" />
         <span className="truncate font-mono">{repo.full_name}</span>
         {repo.private && <Lock className="w-3.5 h-3.5 text-slate-400 shrink-0" aria-label="비공개" />}
         {repo.archived && <Archive className="w-3.5 h-3.5 text-zinc-400 shrink-0" aria-label="아카이브" />}
+        <div className="ml-auto flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={onEdit}
+            title="편집"
+            className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-brand-600 transition-colors"
+            aria-label="편집"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={onPromo}
+            title="홍보문 생성 (AI)"
+            className="p-1 rounded hover:bg-purple-50 text-slate-400 hover:text-purple-600 transition-colors"
+            aria-label="홍보문 생성"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <path d="M12 2c0 0 .8 6.2 3.2 8.8C17.6 13.4 24 12 24 12s-6.4-1.4-8.8 4.2C12.8 18.8 12 22 12 22s-.8-3.2-3.2-6C6.4 13.4 0 12 0 12s6.4 1.4 8.8-1.2C11.2 8.2 12 2 12 2z"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
       {/* 앱 이름 */}
@@ -2436,8 +2473,8 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
         <span className="flex items-center gap-1" title="Open issues">
           <CircleAlert className="w-3.5 h-3.5" /> {repo.open_issues_count || 0}
         </span>
-        <span className="ml-auto text-slate-400" title="최초 생성일 / 최종 수정일">
-          📅 {formatDate(repo.created_at)} · ✏️ {formatDate(repo.updated_at)}
+        <span className="ml-auto text-slate-400 flex items-center gap-1" title="최초 생성일 / 최종 수정일">
+          📅 {formatDate(repo.created_at)} · <Clock className="w-3 h-3" /> {formatDate(repo.updated_at)}
         </span>
       </div>
 
@@ -2493,24 +2530,8 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
 
       {/* 액션 영역: 카드 하단 고정 */}
       <div className="mt-auto pt-3 border-t border-slate-100">
-        {/* primary actions */}
-        <div className="flex gap-2">
-          <button
-            className="btn-primary text-xs sm:text-sm py-2 flex-1"
-            onClick={onEdit}
-          >
-            <Edit3 className="w-3.5 h-3.5" /> {t(lang, 'edit')}
-          </button>
-          <button
-            className="btn-primary text-xs sm:text-sm py-2 flex-1"
-            onClick={onPromo}
-          >
-            <Sparkles className="w-3.5 h-3.5" /> {t(lang, 'generatePromo')}
-          </button>
-        </div>
-
         {/* secondary links: GitHub / 배포 / 최근 커밋 */}
-        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
           <a
             className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1"
             href={repo.html_url}
@@ -2812,13 +2833,24 @@ function Field({ label, children, full }) {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
   const [aiPromo, setAiPromo] = useState({});
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [showAi, setShowAi] = useState(false);
+  const [githubReadme, setGithubReadme] = useState(null);
+  const [readmeLoading, setReadmeLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReadmeLoading(true);
+    fetchGithubReadme(repo.full_name, token).then((md) => {
+      if (!cancelled) { setGithubReadme(md); setReadmeLoading(false); }
+    }).catch(() => { if (!cancelled) setReadmeLoading(false); });
+    return () => { cancelled = true; };
+  }, [repo.full_name, token]);
 
   const tabs = [
     { id: 'oneLiner', label: t(lang, 'promoOneLiner'), content: promo.oneLiner, ext: 'txt', mime: 'text/plain' },
@@ -2856,6 +2888,10 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
       const githubUrl = repo.html_url || '';
       const hashtags = (meta.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`));
 
+      const readmeSection = githubReadme
+        ? `\n[GitHub README (실제 프로젝트 설명 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
+        : '';
+
       const prompt = `당신은 한국 교사가 만든 교육용 웹앱의 전문 홍보 카피라이터입니다.
 아래 앱 정보를 바탕으로 각 형식에 맞는 고품질 홍보문을 한국어로 작성해주세요.
 
@@ -2870,7 +2906,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
 - 해시태그: ${hashtags.join(' ') || '#에듀테크 #교육'}
 - 배포 URL: ${url || '(없음)'}
 - GitHub URL: ${githubUrl}
-- 홍보 톤: ${tone}
+- 홍보 톤: ${tone}${readmeSection}
 
 다음 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
 {
@@ -2942,6 +2978,17 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
         </div>
       }
     >
+      {/* README 읽기 상태 배너 */}
+      <div className="mb-2 rounded-lg border text-xs p-2 flex items-center gap-2">
+        {readmeLoading ? (
+          <><Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 shrink-0" /><span className="text-slate-500">GitHub README 읽는 중...</span></>
+        ) : githubReadme ? (
+          <><BookOpen className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-emerald-700">GitHub README를 읽었습니다. AI 생성 시 자동으로 참고합니다.</span></>
+        ) : (
+          <><BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" /><span className="text-slate-400">README 없음 — 앱 정보 기반으로 홍보문을 생성합니다.</span></>
+        )}
+      </div>
+
       {/* AI 안내 배너 */}
       {!geminiApiKey && (
         <div className="mb-3 rounded-lg bg-purple-50 border border-purple-200 text-purple-800 text-xs p-2.5 flex items-center gap-2">
