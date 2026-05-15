@@ -652,9 +652,12 @@ async function apiPullGist(token, gistId) {
    Gemini AI API (free tier)
 ============================================================ */
 
+// 무료 Flash 모델 — 업데이트 시 이 한 줄만 수정
+const GEMINI_MODEL = 'gemini-2.5-flash';
+
 async function callGemini(apiKey, prompt) {
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1030,6 +1033,39 @@ export default function App() {
   const [gistSyncing, setGistSyncing] = useState(false);
 
   const fileInputRef = useRef(null);
+  const adminTimerRef = useRef(null);
+
+  /* --- admin mode: 3-second long-press on bottom-right corner --- */
+  const activateAdmin = useCallback(() => {
+    const ghToken  = import.meta.env.VITE_ADMIN_GH_TOKEN   || '';
+    const gistId   = import.meta.env.VITE_ADMIN_GIST_ID    || '';
+    const geminiKey = import.meta.env.VITE_ADMIN_GEMINI_KEY || '';
+    if (!ghToken && !gistId && !geminiKey) {
+      push('.env 파일에 VITE_ADMIN_* 변수가 설정되지 않았습니다.', 'error');
+      return;
+    }
+    if (ghToken) {
+      setTokenInput(ghToken);
+      setSaveTokenChecked(true);
+      setSettings((s) => ({ ...s, saveToken: true, savedToken: ghToken }));
+    }
+    setSettings((s) => ({
+      ...s,
+      ...(gistId    ? { gistId }              : {}),
+      ...(geminiKey ? { geminiApiKey: geminiKey } : {}),
+    }));
+    push('🔐 관리자 설정이 적용되었습니다.', 'success');
+  }, [push]);
+
+  const handleAdminPressStart = useCallback((e) => {
+    e.preventDefault();
+    adminTimerRef.current = setTimeout(activateAdmin, 3000);
+  }, [activateAdmin]);
+
+  const handleAdminPressEnd = useCallback(() => {
+    clearTimeout(adminTimerRef.current);
+    adminTimerRef.current = null;
+  }, []);
 
   const lang = settings.language;
 
@@ -2089,6 +2125,18 @@ export default function App() {
           }}
         />
       )}
+
+      {/* 숨겨진 관리자 트리거 — 우측 하단 모서리, 3초 꾹 누르기 */}
+      <div
+        className="fixed bottom-0 right-0 w-10 h-10 z-40 select-none"
+        onMouseDown={handleAdminPressStart}
+        onMouseUp={handleAdminPressEnd}
+        onMouseLeave={handleAdminPressEnd}
+        onTouchStart={handleAdminPressStart}
+        onTouchEnd={handleAdminPressEnd}
+        onTouchCancel={handleAdminPressEnd}
+        aria-hidden="true"
+      />
     </div>
   );
 }
