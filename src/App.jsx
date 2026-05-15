@@ -1034,11 +1034,12 @@ export default function App() {
 
   const fileInputRef = useRef(null);
   const adminTimerRef = useRef(null);
+  const [adminPromptOpen, setAdminPromptOpen] = useState(false);
 
-  /* --- admin mode: 3-second long-press on bottom-right corner --- */
+  /* --- admin mode: 3-second long-press → password prompt --- */
   const activateAdmin = useCallback(() => {
-    const ghToken  = import.meta.env.VITE_ADMIN_GH_TOKEN   || '';
-    const gistId   = import.meta.env.VITE_ADMIN_GIST_ID    || '';
+    const ghToken   = import.meta.env.VITE_ADMIN_GH_TOKEN   || '';
+    const gistId    = import.meta.env.VITE_ADMIN_GIST_ID    || '';
     const geminiKey = import.meta.env.VITE_ADMIN_GEMINI_KEY || '';
     if (!ghToken && !gistId && !geminiKey) {
       push('.env 파일에 VITE_ADMIN_* 변수가 설정되지 않았습니다.', 'error');
@@ -1051,7 +1052,7 @@ export default function App() {
     }
     setSettings((s) => ({
       ...s,
-      ...(gistId    ? { gistId }              : {}),
+      ...(gistId    ? { gistId }               : {}),
       ...(geminiKey ? { geminiApiKey: geminiKey } : {}),
     }));
     push('🔐 관리자 설정이 적용되었습니다.', 'success');
@@ -1059,8 +1060,8 @@ export default function App() {
 
   const handleAdminPressStart = useCallback((e) => {
     e.preventDefault();
-    adminTimerRef.current = setTimeout(activateAdmin, 3000);
-  }, [activateAdmin]);
+    adminTimerRef.current = setTimeout(() => setAdminPromptOpen(true), 3000);
+  }, []);
 
   const handleAdminPressEnd = useCallback(() => {
     clearTimeout(adminTimerRef.current);
@@ -2137,6 +2138,95 @@ export default function App() {
         onTouchCancel={handleAdminPressEnd}
         aria-hidden="true"
       />
+
+      {/* 관리자 비밀번호 다이얼로그 */}
+      {adminPromptOpen && (
+        <AdminPasswordModal
+          onConfirm={(pw) => {
+            const correct = import.meta.env.VITE_ADMIN_PASSWORD || '';
+            if (!correct) {
+              push('VITE_ADMIN_PASSWORD 환경변수가 설정되지 않았습니다.', 'error');
+              setAdminPromptOpen(false);
+              return;
+            }
+            if (pw === correct) {
+              setAdminPromptOpen(false);
+              activateAdmin();
+            } else {
+              push('비밀번호가 올바르지 않습니다.', 'error');
+            }
+          }}
+          onClose={() => setAdminPromptOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   AdminPasswordModal
+============================================================ */
+
+function AdminPasswordModal({ onConfirm, onClose }) {
+  const [pw, setPw] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    onConfirm(pw);
+    setPw('');
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm grid place-items-center p-4"
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-xs bg-white rounded-2xl shadow-card p-6 space-y-4"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-slate-900 text-white grid place-items-center">
+            <ShieldCheck className="w-4 h-4" />
+          </div>
+          <h3 className="font-bold text-slate-900">관리자 인증</h3>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <div className="relative">
+            <input
+              ref={inputRef}
+              type={showPw ? 'text' : 'password'}
+              className="input pr-10 w-full"
+              placeholder="비밀번호 입력"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              autoComplete="off"
+            />
+            <button
+              type="button"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              onClick={() => setShowPw((v) => !v)}
+              aria-label={showPw ? '숨기기' : '보기'}
+            >
+              {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" className="btn-secondary flex-1" onClick={onClose}>
+              취소
+            </button>
+            <button type="submit" className="btn-primary flex-1" disabled={!pw}>
+              <ShieldCheck className="w-4 h-4" /> 확인
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
