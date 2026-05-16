@@ -683,7 +683,7 @@ const GEMINI_MODELS = [
   'gemini-2.0-flash-lite',  // 5순위
 ];
 
-async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
+async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = null } = {}) {
   const generationConfig = {
     temperature: 0.7,
     maxOutputTokens: 8192,
@@ -692,6 +692,7 @@ async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
 
   let lastError = null;
   for (const model of GEMINI_MODELS) {
+    if (onModelChange) onModelChange(model); // 현재 시도 중인 모델 알림
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
@@ -1559,7 +1560,8 @@ export default function App() {
         promoData: promoSnapshot,
       };
       const gist = await apiPushGist(effectiveToken, settings.gistId || '', payload);
-      lastPushedSnapshotRef.current = JSON.stringify(metaSnapshot);
+      // repoMeta + promoData 를 합산해 스냅샷 저장 (어느 쪽이 변해도 push 감지)
+      lastPushedSnapshotRef.current = JSON.stringify(metaSnapshot) + '||' + JSON.stringify(promoSnapshot);
       setSettings((s) => ({
         ...s,
         gistId: gist.id,
@@ -1587,16 +1589,20 @@ export default function App() {
     autoPullDoneRef.current = true;
     try {
       const data = await apiPullGist(effectiveToken, gistId);
+      const pulledPromo = (data.promoData && typeof data.promoData === 'object')
+        ? { ...promoDataRef.current, ...data.promoData }
+        : promoDataRef.current;
+
       if (data.repoMeta && typeof data.repoMeta === 'object') {
         const merged = mergeRepoMetaByTime(repoMetaRef.current, data.repoMeta);
         setRepoMeta(merged);
         repoMetaRef.current = merged;
-        lastPushedSnapshotRef.current = JSON.stringify(merged);
+        lastPushedSnapshotRef.current = JSON.stringify(merged) + '||' + JSON.stringify(pulledPromo);
       } else {
-        lastPushedSnapshotRef.current = JSON.stringify(repoMetaRef.current);
+        lastPushedSnapshotRef.current = JSON.stringify(repoMetaRef.current) + '||' + JSON.stringify(pulledPromo);
       }
       if (data.promoData && typeof data.promoData === 'object') {
-        setPromoData((prev) => ({ ...prev, ...data.promoData }));
+        setPromoData(pulledPromo);
       }
       setSettings((s) => ({
         ...s,
@@ -1649,7 +1655,8 @@ export default function App() {
     if (!settings.gistId || !effectiveToken) return;
     if (pullInProgressRef.current) return;
     if (lastPushedSnapshotRef.current === null) return;
-    const snapshot = JSON.stringify(repoMeta);
+    // repoMeta + promoData 둘 다 포함해 비교 — promoData만 변경돼도 push 트리거
+    const snapshot = JSON.stringify(repoMeta) + '||' + JSON.stringify(promoDataRef.current);
     if (snapshot === lastPushedSnapshotRef.current) return;
     clearTimeout(pushTimerRef.current);
     pushTimerRef.current = setTimeout(() => {
@@ -2791,6 +2798,7 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
   const [hashtagsInput, setHashtagsInput] = useState((meta?.hashtags || []).join(', '));
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [currentModel, setCurrentModel] = useState(null);
   const [githubReadme, setGithubReadme] = useState(null);
 
   useEffect(() => {
@@ -2822,6 +2830,7 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
     }
     setAiLoading(true);
     setAiError('');
+    setCurrentModel(null);
     try {
       const readmeSection = githubReadme
         ? `\n[GitHub README (실제 앱 설명 — 최우선 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
@@ -2846,7 +2855,8 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
 - useCase: 주 활용 장면 (예: 국어 수업, 학급 운영, 교사 연수)
 - features: 주요 기능 목록 (3~5개, 배열)
 - hashtags: 관련 해시태그 (5~8개, # 없이, 배열)`;
-      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
+      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true, onModelChange: setCurrentModel });
+      setCurrentModel(null);
       const data = extractJson(text);
       if (data.appTitleKr) set('appTitleKr', data.appTitleKr);
       if (data.appTitleEn) set('appTitleEn', data.appTitleEn);
@@ -2865,6 +2875,7 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
       setAiError(err?.message || 'AI 자동채우기 중 오류가 발생했습니다.');
     } finally {
       setAiLoading(false);
+      setCurrentModel(null);
     }
   };
 
@@ -2896,6 +2907,17 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
               </button>
             </div>
           </div>
+          {/* AI 호출 중 모델 표시 */}
+          {aiLoading && currentModel && (
+            <p className="text-[11px] text-purple-400 flex items-center gap-1.5 pl-0.5">
+              <span className="inline-flex gap-0.5">
+                <span className="w-1 h-3 rounded-sm bg-purple-300 animate-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-3 rounded-sm bg-purple-400 animate-pulse" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-3 rounded-sm bg-purple-500 animate-pulse" style={{ animationDelay: '300ms' }} />
+              </span>
+              {currentModel}
+            </p>
+          )}
           {aiError && (
             <p className="text-xs text-red-600 pl-0.5">{aiError}</p>
           )}
@@ -3047,11 +3069,16 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
   const [tab, setTab] = useState('oneLiner');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [currentModel, setCurrentModel] = useState(null); // AI 호출 중인 모델명
   const [githubReadme, setGithubReadme] = useState(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
 
   // Unified editable content: driven by App-level promoData (Gist-synced)
-  const [content, setContent] = useState(() => savedPromo?.content || {});
+  // savedPromo.content 가 plain object 인지 방어적으로 확인 (이전 버전 데이터 호환)
+  const [content, setContent] = useState(() => {
+    const c = savedPromo?.content;
+    return (c !== null && typeof c === 'object' && !Array.isArray(c)) ? c : {};
+  });
   const [aiGeneratedAt, setAiGeneratedAt] = useState(() => savedPromo?.generatedAt || null);
 
   // Propagate changes up to App (which persists to localStorage + Gist)
@@ -3077,13 +3104,16 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     { id: 'readme', label: t(lang, 'promoReadme'), content: promo.readme, ext: 'md', mime: 'text/markdown' },
   ];
 
-  const active = tabs.find((tb) => tb.id === tab);
+  // tab 값이 tabs 목록에 없으면 첫 번째 탭으로 폴백 (이전 저장 데이터·버전 불일치 방어)
+  const active = tabs.find((tb) => tb.id === tab) ?? tabs[0];
   const baseName = (meta.appTitleEn || repo.name || 'chithub').toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 
   // Content priority: user-saved > template
-  const getContent = (tabId) => content[tabId] !== undefined ? content[tabId] : (tabs.find(t => t.id === tabId)?.content || '');
+  // content 가 plain object 임을 보장 (방어적 접근)
+  const safeContent = (content !== null && typeof content === 'object' && !Array.isArray(content)) ? content : {};
+  const getContent = (tabId) => safeContent[tabId] !== undefined ? safeContent[tabId] : (tabs.find(t => t.id === tabId)?.content || '');
   const activeContent = getContent(tab);
-  const isModified = (tabId) => content[tabId] !== undefined && content[tabId] !== (tabs.find(t => t.id === tabId)?.content || '');
+  const isModified = (tabId) => safeContent[tabId] !== undefined && safeContent[tabId] !== (tabs.find(t => t.id === tabId)?.content || '');
   const hasAnyModified = tabs.some(t => isModified(t.id));
 
   const handleEdit = (value) => setContent(prev => ({ ...prev, [tab]: value }));
@@ -3105,6 +3135,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     }
     setAiLoading(true);
     setAiError('');
+    setCurrentModel(null);
     try {
       const title = (meta.appTitleKr || repo.name || '').trim();
       const titleEn = (meta.appTitleEn || repo.name || '').trim();
@@ -3150,7 +3181,8 @@ training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방�
 readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)
 portfolioDescription: 포트폴리오 카드에 들어갈 자연스러운 한국어 홍보 설명문 (1~2문장, ${tone} 톤, 교육적 가치 강조)`;
 
-      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
+      const text = await callGemini(geminiApiKey, prompt, { jsonMode: true, onModelChange: setCurrentModel });
+      setCurrentModel(null);
       const data = extractJson(text);
       const now = new Date().toISOString();
 
@@ -3173,6 +3205,7 @@ portfolioDescription: 포트폴리오 카드에 들어갈 자연스러운 한국
       setAiError(err?.message || 'AI 생성 중 오류가 발생했습니다.');
     } finally {
       setAiLoading(false);
+      setCurrentModel(null);
     }
   };
 
@@ -3214,7 +3247,18 @@ portfolioDescription: 포트폴리오 카드에 들어갈 자연스러운 한국
               </button>
             </div>
           </div>
-          {aiGeneratedAt && (
+          {/* 모델 표시 — 호출 중일 때만, 배터리 불빛처럼 자연스럽게 */}
+          {aiLoading && currentModel && (
+            <p className="text-[11px] text-purple-400 flex items-center gap-1.5">
+              <span className="inline-flex gap-0.5">
+                <span className="w-1 h-3 rounded-sm bg-purple-300 animate-pulse" style={{ animationDelay: '0ms' }} />
+                <span className="w-1 h-3 rounded-sm bg-purple-400 animate-pulse" style={{ animationDelay: '150ms' }} />
+                <span className="w-1 h-3 rounded-sm bg-purple-500 animate-pulse" style={{ animationDelay: '300ms' }} />
+              </span>
+              {currentModel}
+            </p>
+          )}
+          {aiGeneratedAt && !aiLoading && (
             <p className="text-[11px] text-purple-500 flex items-center gap-1">
               <Sparkles className="w-3 h-3" /> AI 생성 완료 · {new Date(aiGeneratedAt).toLocaleString('ko-KR')} · 자동저장됨
             </p>
