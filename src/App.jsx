@@ -932,31 +932,19 @@ function buildPromo(repo, meta) {
     '※ 본 자료는 칫허브(Chithub)에서 자동 생성되었으며, 필요에 맞게 수정해 활용하세요.',
   ]);
 
-  /* === 5) Portfolio JSON (richer) === */
-  const portfolio = JSON.stringify(
-    {
-      title,
-      englishTitle: titleEn,
-      category,
-      status,
-      shortDescription: shortDesc,
-      longDescription: longDesc,
-      targetUsers,
-      useCase,
-      features,
-      tone,
-      url,
-      github: githubUrl,
-      language: repo.language || '',
-      stars: repo.stargazers_count || 0,
-      forks: repo.forks_count || 0,
-      hashtags,
-      createdAt: repo.created_at || '',
-      updatedAt: repo.updated_at || '',
-    },
-    null,
-    2
-  );
+  /* === 5) Portfolio JS object (custom format) === */
+  const esc = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  const portfolioId = (titleEn || repo.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const portfolioTags = hashtags.map((h) => h.replace(/^#/, '')).join(' ');
+  const portfolio = `{
+  id: '${esc(portfolioId)}',
+  category: '${esc(category)}',
+  title: '${esc(title)}',
+  engTitle: '${esc(titleEn)}',
+  description: '${esc(shortDesc)}',
+  tags: '${esc(portfolioTags)}',
+  imageUrl: '${esc(meta.thumbnailUrl || '')}',
+},`;
 
   /* === 6) README (with badges + sections) === */
   const badge = (label, value, color = 'blue') =>
@@ -2865,12 +2853,27 @@ function Field({ label, children, full }) {
 function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
-  const [aiPromo, setAiPromo] = useState({});
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
-  const [showAi, setShowAi] = useState(false);
   const [githubReadme, setGithubReadme] = useState(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
+
+  const storageKey = `chithubPromoData_${repo.full_name}`;
+
+  // Unified editable content: user edits + AI results merged, persisted to localStorage
+  const [content, setContent] = useState(() => {
+    const saved = readJSON(storageKey, null);
+    return saved?.content || {};
+  });
+  const [aiGeneratedAt, setAiGeneratedAt] = useState(() => {
+    const saved = readJSON(storageKey, null);
+    return saved?.generatedAt || null;
+  });
+
+  // Auto-save whenever content or timestamp changes
+  useEffect(() => {
+    writeJSON(storageKey, { content, generatedAt: aiGeneratedAt });
+  }, [content, aiGeneratedAt, storageKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2886,15 +2889,31 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     { id: 'sns', label: t(lang, 'promoSns'), content: promo.sns, ext: 'txt', mime: 'text/plain' },
     { id: 'youtube', label: t(lang, 'promoYoutube'), content: promo.youtube, ext: 'txt', mime: 'text/plain' },
     { id: 'training', label: t(lang, 'promoTraining'), content: promo.training, ext: 'txt', mime: 'text/plain' },
-    { id: 'json', label: t(lang, 'promoJson'), content: promo.portfolio, ext: 'json', mime: 'application/json' },
+    { id: 'json', label: t(lang, 'promoJson'), content: promo.portfolio, ext: 'js', mime: 'text/javascript' },
     { id: 'readme', label: t(lang, 'promoReadme'), content: promo.readme, ext: 'md', mime: 'text/markdown' },
   ];
 
   const active = tabs.find((tb) => tb.id === tab);
   const baseName = (meta.appTitleEn || repo.name || 'chithub').toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 
-  const hasAiContent = Object.keys(aiPromo).length > 0;
-  const activeContent = (showAi && hasAiContent && aiPromo[tab]) ? aiPromo[tab] : active.content;
+  // Content priority: user-saved > template
+  const getContent = (tabId) => content[tabId] !== undefined ? content[tabId] : (tabs.find(t => t.id === tabId)?.content || '');
+  const activeContent = getContent(tab);
+  const isModified = (tabId) => content[tabId] !== undefined && content[tabId] !== (tabs.find(t => t.id === tabId)?.content || '');
+  const hasAnyModified = tabs.some(t => isModified(t.id));
+
+  const handleEdit = (value) => setContent(prev => ({ ...prev, [tab]: value }));
+
+  const handleResetTab = () => {
+    setContent(prev => { const next = { ...prev }; delete next[tab]; return next; });
+  };
+
+  const handleClearAll = () => {
+    if (!window.confirm('AI 생성 결과와 수정 내용을 모두 초기화합니다. 계속하시겠습니까?')) return;
+    setContent({});
+    setAiGeneratedAt(null);
+    writeJSON(storageKey, null);
+  };
 
   const handleAIGenerate = async () => {
     if (!geminiApiKey) {
@@ -2937,26 +2956,25 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
 - GitHub URL: ${githubUrl}
 - 홍보 톤: ${tone}${readmeSection}
 
-다음 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
-{
-  "oneLiner": "한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)",
-  "sns": "SNS 게시글 (이모지·줄바꿈·해시태그 포함, 자연스러운 소셜미디어 문체)",
-  "youtube": "유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)",
-  "training": "연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)",
-  "readme": "README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식, 배지 포함)"
-}`;
+다음 JSON 키로 각 형식에 맞는 홍보문을 작성하세요:
+oneLiner: 한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)
+sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
+youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
+training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
+readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)`;
 
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
-      setAiPromo({
-        oneLiner: data.oneLiner || '',
-        sns: data.sns || '',
-        youtube: data.youtube || '',
-        training: data.training || '',
-        json: promo.portfolio,
-        readme: data.readme || '',
-      });
-      setShowAi(true);
+      const now = new Date().toISOString();
+      setContent(prev => ({
+        ...prev,
+        oneLiner: data.oneLiner || prev.oneLiner || '',
+        sns: data.sns || prev.sns || '',
+        youtube: data.youtube || prev.youtube || '',
+        training: data.training || prev.training || '',
+        readme: data.readme || prev.readme || '',
+      }));
+      setAiGeneratedAt(now);
     } catch (err) {
       setAiError(err?.message || 'AI 생성 중 오류가 발생했습니다.');
     } finally {
@@ -2970,55 +2988,64 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
       onClose={onClose}
       wide
       footer={
-        <div className="flex flex-wrap items-center gap-2">
-          {/* AI 원클릭 생성 */}
-          <button
-            className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-            onClick={handleAIGenerate}
-            disabled={aiLoading || !geminiApiKey}
-            title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : undefined}
-          >
-            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {aiLoading ? 'AI 생성 중...' : 'AI 원클릭 생성'}
-          </button>
-          {hasAiContent && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              className={`px-3 py-2 rounded-lg text-sm font-semibold border flex items-center gap-1.5 shrink-0 ${
-                showAi
-                  ? 'bg-purple-100 text-purple-700 border-purple-300'
-                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-              }`}
-              onClick={() => setShowAi((v) => !v)}
+              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+              onClick={handleAIGenerate}
+              disabled={aiLoading || !geminiApiKey}
+              title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : 'AI로 전체 홍보문 생성/재생성'}
             >
-              {showAi ? '✨ AI 보기 중' : '📋 템플릿 보기 중'}
+              {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {aiLoading ? 'AI 생성 중...' : aiGeneratedAt ? 'AI 재생성' : 'AI 원클릭 생성'}
             </button>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <button className="btn-secondary" onClick={() => onCopy(activeContent)}>
-              <Copy className="w-4 h-4" /> {t(lang, 'copy')}
-            </button>
-            <button
-              className="btn-primary"
-              onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, activeContent, active.mime)}
-            >
-              <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
-            </button>
+            {hasAnyModified && (
+              <button
+                className="px-3 py-2 rounded-lg text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5 shrink-0"
+                onClick={handleClearAll}
+                title="AI 결과와 수정 내용 모두 초기화"
+              >
+                <Trash2 className="w-4 h-4" /> 전체 초기화
+              </button>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <button className="btn-secondary" onClick={() => onCopy(activeContent)}>
+                <Copy className="w-4 h-4" /> {t(lang, 'copy')}
+              </button>
+              <button
+                className="btn-primary"
+                onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, activeContent, active.mime)}
+              >
+                <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
+              </button>
+            </div>
           </div>
+          {aiGeneratedAt && (
+            <p className="text-[11px] text-purple-500 flex items-center gap-1">
+              <Sparkles className="w-3 h-3" /> AI 생성 완료 · {new Date(aiGeneratedAt).toLocaleString('ko-KR')} · 자동저장됨
+            </p>
+          )}
         </div>
       }
     >
-      {/* README 읽기 상태 배너 */}
-      <div className="mb-2 rounded-lg border text-xs p-2 flex items-center gap-2">
-        {readmeLoading ? (
-          <><Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 shrink-0" /><span className="text-slate-500">GitHub README 읽는 중...</span></>
-        ) : githubReadme ? (
-          <><BookOpen className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-emerald-700">GitHub README를 읽었습니다. AI 생성 시 자동으로 참고합니다.</span></>
-        ) : (
-          <><BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" /><span className="text-slate-400">README 없음 — 앱 정보 기반으로 홍보문을 생성합니다.</span></>
+      {/* README + 자동저장 상태 */}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex items-center gap-1.5 rounded-lg border px-2 py-1">
+          {readmeLoading ? (
+            <><Loader2 className="w-3 h-3 animate-spin text-slate-400" /><span className="text-slate-500">README 읽는 중...</span></>
+          ) : githubReadme ? (
+            <><BookOpen className="w-3 h-3 text-emerald-600" /><span className="text-emerald-700">README 읽음 (AI 참고)</span></>
+          ) : (
+            <><BookOpen className="w-3 h-3 text-slate-400" /><span className="text-slate-400">README 없음</span></>
+          )}
+        </div>
+        {hasAnyModified && (
+          <span className="flex items-center gap-1 text-amber-600 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1">
+            <Save className="w-3 h-3" /> 자동저장됨
+          </span>
         )}
       </div>
 
-      {/* AI 안내 배너 */}
       {!geminiApiKey && (
         <div className="mb-3 rounded-lg bg-purple-50 border border-purple-200 text-purple-800 text-xs p-2.5 flex items-center gap-2">
           <Sparkles className="w-3.5 h-3.5 shrink-0" />
@@ -3031,7 +3058,8 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
         </div>
       )}
 
-      <div className="flex flex-wrap gap-1.5 mb-3">
+      {/* 탭 + 현재 탭 초기화 */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
         {tabs.map((tb) => (
           <button
             key={tb.id}
@@ -3042,28 +3070,36 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
             aria-pressed={tab === tb.id}
           >
             {tb.label}
-            {showAi && hasAiContent && aiPromo[tb.id] && (
-              <span className="text-[10px] bg-purple-200 text-purple-800 rounded-full px-1">AI</span>
+            {isModified(tb.id) && (
+              <span className="text-[10px] bg-purple-200 text-purple-800 rounded-full px-1">수정</span>
             )}
           </button>
         ))}
       </div>
+
+      {/* 현재 탭 초기화 버튼 */}
+      {isModified(tab) && (
+        <div className="flex justify-end mb-1">
+          <button
+            className="text-xs text-slate-400 hover:text-red-500 flex items-center gap-1"
+            onClick={handleResetTab}
+            title="이 탭의 내용을 기본값으로 초기화"
+          >
+            <RefreshCcw className="w-3 h-3" /> 이 탭 초기화
+          </button>
+        </div>
+      )}
+
       <textarea
-        readOnly
-        className={`input font-mono text-xs min-h-[260px] w-full ${showAi && hasAiContent && aiPromo[tab] ? 'border-purple-300 bg-purple-50/30' : ''}`}
+        className="input font-mono text-xs min-h-[260px] w-full resize-y"
         value={activeContent}
+        onChange={(e) => handleEdit(e.target.value)}
         aria-label={active.label}
+        placeholder={`${active.label} 내용을 입력하거나 AI로 생성하세요.`}
       />
-      {showAi && hasAiContent && aiPromo[tab] && (
-        <p className="text-xs text-purple-600 mt-1.5 flex items-center gap-1">
-          <Sparkles className="w-3 h-3" /> AI가 생성한 홍보글입니다. 내용을 확인 후 복사하세요.
-        </p>
-      )}
-      {(!showAi || !hasAiContent) && (
-        <p className="text-xs text-slate-500 mt-2">
-          편집 화면에서 더 자세한 정보를 입력할수록 홍보 자료의 품질이 좋아집니다.
-        </p>
-      )}
+      <p className="text-xs text-slate-400 mt-1.5">
+        직접 수정 가능 · 변경 내용은 자동으로 저장됩니다.
+      </p>
     </Modal>
   );
 }
