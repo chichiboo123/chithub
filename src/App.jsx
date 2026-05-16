@@ -934,15 +934,14 @@ function buildPromo(repo, meta) {
 
   /* === 5) Portfolio JS object (custom format) === */
   const esc = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
-  const portfolioId = (titleEn || repo.name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-  const portfolioTags = hashtags.map((h) => h.replace(/^#/, '')).join(' ');
+  const portfolioTagStr = hashtags.join(' '); // keep # prefix as-is
   const portfolio = `{
-  id: '${esc(portfolioId)}',
+  id: '',
   category: '${esc(category)}',
   title: '${esc(title)}',
   engTitle: '${esc(titleEn)}',
-  description: '${esc(shortDesc)}',
-  tags: '${esc(portfolioTags)}',
+  description: '${esc(longDesc || shortDesc)}',
+  tags: '${esc(portfolioTagStr)}',
   imageUrl: '${esc(meta.thumbnailUrl || '')}',
 },`;
 
@@ -1059,6 +1058,10 @@ export default function App() {
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
   const [helpOpen, setHelpOpen] = useState(false);
+  const [readmeCache, setReadmeCache] = useState({}); // { [fullName]: null | string }
+  const [readmeViewRepo, setReadmeViewRepo] = useState(null); // fullName whose README to show
+  const [promoData, setPromoData] = useState(() => readJSON('chithubPromoData', {}));
+  const promoDataRef = useRef(promoData);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
@@ -1127,6 +1130,33 @@ export default function App() {
   useEffect(() => {
     writeJSON(STORAGE_KEYS.repos, repos);
   }, [repos]);
+
+  /* --- persist promoData --- */
+  useEffect(() => {
+    promoDataRef.current = promoData;
+    writeJSON('chithubPromoData', promoData);
+  }, [promoData]);
+
+  const handleUpdatePromo = useCallback((fullName, data) => {
+    setPromoData((prev) => ({ ...prev, [fullName]: data }));
+  }, []);
+
+  /* --- README fetch-and-cache --- */
+  const handleViewReadme = useCallback(async (fullName) => {
+    if (readmeCache[fullName] !== undefined) {
+      if (readmeCache[fullName]) setReadmeViewRepo(fullName);
+      else push('이 리포지토리에는 README가 없습니다.', 'info');
+      return;
+    }
+    try {
+      const md = await fetchGithubReadme(fullName, effectiveToken);
+      setReadmeCache((prev) => ({ ...prev, [fullName]: md }));
+      if (md) setReadmeViewRepo(fullName);
+      else push('이 리포지토리에는 README가 없습니다.', 'info');
+    } catch {
+      push('README를 불러오는 중 오류가 발생했습니다.', 'error');
+    }
+  }, [readmeCache, effectiveToken, push]);
 
   /* --- ESC to close modals --- */
   useEffect(() => {
@@ -1432,10 +1462,11 @@ export default function App() {
     setGistSyncing(true);
     try {
       const metaSnapshot = repoMetaRef.current;
+      const promoSnapshot = promoDataRef.current;
       const payload = {
         exportedAt: new Date().toISOString(),
         app: 'chithub',
-        version: 2,
+        version: 3,
         settings: {
           language: settings.language,
           savedUsername: settings.savedUsername || '',
@@ -1444,6 +1475,7 @@ export default function App() {
           gistId: settings.gistId || '',
         },
         repoMeta: metaSnapshot,
+        promoData: promoSnapshot,
       };
       const gist = await apiPushGist(effectiveToken, settings.gistId || '', payload);
       lastPushedSnapshotRef.current = JSON.stringify(metaSnapshot);
@@ -1481,6 +1513,9 @@ export default function App() {
         lastPushedSnapshotRef.current = JSON.stringify(merged);
       } else {
         lastPushedSnapshotRef.current = JSON.stringify(repoMetaRef.current);
+      }
+      if (data.promoData && typeof data.promoData === 'object') {
+        setPromoData((prev) => ({ ...prev, ...data.promoData }));
       }
       setSettings((s) => ({
         ...s,
@@ -1527,12 +1562,12 @@ export default function App() {
     handlePullFromGist(settings.gistId, { silent: true });
   }, [settings.autoSync, settings.gistId, effectiveToken, handlePullFromGist]);
 
-  /* debounced auto-push when repoMeta changes (only after a successful sync baseline exists) */
+  /* debounced auto-push when repoMeta or promoData changes */
   useEffect(() => {
     if (!settings.autoSync) return;
     if (!settings.gistId || !effectiveToken) return;
     if (pullInProgressRef.current) return;
-    if (lastPushedSnapshotRef.current === null) return; // require initial sync first
+    if (lastPushedSnapshotRef.current === null) return;
     const snapshot = JSON.stringify(repoMeta);
     if (snapshot === lastPushedSnapshotRef.current) return;
     clearTimeout(pushTimerRef.current);
@@ -1540,7 +1575,7 @@ export default function App() {
       handlePushToGist(true);
     }, 4000);
     return () => clearTimeout(pushTimerRef.current);
-  }, [repoMeta, settings.autoSync, settings.gistId, effectiveToken, handlePushToGist]);
+  }, [repoMeta, promoData, settings.autoSync, settings.gistId, effectiveToken, handlePushToGist]);
 
   /* --- editing repo data --- */
   const currentEditingMeta = editingRepo ? getMeta(editingRepo) : null;
@@ -1916,6 +1951,8 @@ export default function App() {
                   onLoadCommits={() => handleLoadCommits(repo.full_name)}
                   commits={commitsByRepo[repo.full_name]}
                   loadingCommits={loadingCommitsFor === repo.full_name}
+                  readmeStatus={readmeCache[repo.full_name]}
+                  onViewReadme={() => handleViewReadme(repo.full_name)}
                 />
               ))}
             </div>
@@ -1933,6 +1970,7 @@ export default function App() {
                     <th className="px-3 py-3 font-semibold whitespace-nowrap">생성 / 수정</th>
                     <th className="px-3 py-3 font-semibold whitespace-nowrap">활동</th>
                     <th className="px-3 py-3 font-semibold">메모</th>
+                    <th className="px-3 py-3 font-semibold text-center">README</th>
                     <th className="px-3 py-3 font-semibold text-center">링크</th>
                     <th className="px-3 py-3 font-semibold text-right">동작</th>
                   </tr>
@@ -1982,8 +2020,8 @@ export default function App() {
                         </td>
                         <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-600 leading-tight">
                           <div title="최초 생성일">📅 {formatDate(repo.created_at)}</div>
-                          <div className="text-slate-500" title="최종 수정일">
-                            ✏️ {formatDate(repo.updated_at)}
+                          <div className="text-slate-500 flex items-center gap-1" title="최종 수정일">
+                            <Clock className="w-3 h-3" /> {formatDate(repo.updated_at)}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">
@@ -2005,6 +2043,27 @@ export default function App() {
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {(() => {
+                            const rs = readmeCache[repo.full_name];
+                            return (
+                              <button
+                                onClick={() => handleViewReadme(repo.full_name)}
+                                title={rs === null ? 'README 없음' : rs ? 'README 보기' : 'README 확인하기'}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors ${
+                                  rs === null
+                                    ? 'text-slate-300 border-slate-100 cursor-default'
+                                    : rs
+                                    ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                                    : 'text-slate-400 border-slate-200 hover:text-brand-600 hover:border-brand-300'
+                                }`}
+                              >
+                                <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                                <span>{rs === null ? '없음' : rs ? '있음' : '확인'}</span>
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td className="px-3 py-3 text-center">
                           <div className="inline-flex items-center gap-1">
@@ -2126,6 +2185,17 @@ export default function App() {
           }}
           geminiApiKey={settings.geminiApiKey}
           token={effectiveToken}
+          savedPromo={promoData[promoRepo] || null}
+          onUpdatePromo={handleUpdatePromo}
+        />
+      )}
+
+      {/* README modal */}
+      {readmeViewRepo && readmeCache[readmeViewRepo] && (
+        <ReadmeModal
+          fullName={readmeViewRepo}
+          content={readmeCache[readmeViewRepo]}
+          onClose={() => setReadmeViewRepo(null)}
         />
       )}
 
@@ -2411,7 +2481,7 @@ function Modal({ title, onClose, children, footer, wide }) {
    RepoCard
 ============================================================ */
 
-function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits }) {
+function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme }) {
   const deploy = getDeploymentUrl(repo, meta);
 
   return (
@@ -2565,6 +2635,20 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
               )}
             </a>
           )}
+          <button
+            onClick={onViewReadme}
+            title={readmeStatus === null ? 'README 없음' : readmeStatus ? 'README 보기' : 'README 확인'}
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border transition-colors ${
+              readmeStatus === null
+                ? 'text-slate-300 border-slate-200 cursor-default'
+                : readmeStatus
+                ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                : 'text-slate-500 border-slate-200 hover:text-brand-700 hover:border-brand-300'
+            }`}
+          >
+            <BookOpen className="w-3 h-3 shrink-0" />
+            <span>{readmeStatus === null ? '없음' : readmeStatus ? 'README' : 'README?'}</span>
+          </button>
           <button
             className="ml-auto text-slate-500 hover:text-brand-700 inline-flex items-center gap-1 disabled:opacity-50"
             onClick={onLoadCommits}
@@ -2850,7 +2934,7 @@ function Field({ label, children, full }) {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, savedPromo, onUpdatePromo }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
   const [aiLoading, setAiLoading] = useState(false);
@@ -2858,22 +2942,14 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
   const [githubReadme, setGithubReadme] = useState(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
 
-  const storageKey = `chithubPromoData_${repo.full_name}`;
+  // Unified editable content: driven by App-level promoData (Gist-synced)
+  const [content, setContent] = useState(() => savedPromo?.content || {});
+  const [aiGeneratedAt, setAiGeneratedAt] = useState(() => savedPromo?.generatedAt || null);
 
-  // Unified editable content: user edits + AI results merged, persisted to localStorage
-  const [content, setContent] = useState(() => {
-    const saved = readJSON(storageKey, null);
-    return saved?.content || {};
-  });
-  const [aiGeneratedAt, setAiGeneratedAt] = useState(() => {
-    const saved = readJSON(storageKey, null);
-    return saved?.generatedAt || null;
-  });
-
-  // Auto-save whenever content or timestamp changes
+  // Propagate changes up to App (which persists to localStorage + Gist)
   useEffect(() => {
-    writeJSON(storageKey, { content, generatedAt: aiGeneratedAt });
-  }, [content, aiGeneratedAt, storageKey]);
+    onUpdatePromo(repo.full_name, { content, generatedAt: aiGeneratedAt });
+  }, [content, aiGeneratedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false;
@@ -3100,6 +3176,31 @@ readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)`;
       <p className="text-xs text-slate-400 mt-1.5">
         직접 수정 가능 · 변경 내용은 자동으로 저장됩니다.
       </p>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ReadmeModal
+============================================================ */
+
+function ReadmeModal({ fullName, content, onClose }) {
+  const lines = content.split('\n');
+  return (
+    <Modal title={`README · ${fullName}`} onClose={onClose} wide>
+      <div className="font-mono text-xs leading-relaxed whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-4 max-h-[60vh] overflow-y-auto">
+        {lines.map((line, i) => {
+          if (/^# /.test(line)) return <div key={i} className="text-xl font-bold text-slate-900 mt-1 mb-1">{line.replace(/^# /, '')}</div>;
+          if (/^## /.test(line)) return <div key={i} className="text-base font-bold text-slate-800 mt-3 mb-1 border-b border-slate-200 pb-0.5">{line.replace(/^## /, '')}</div>;
+          if (/^### /.test(line)) return <div key={i} className="text-sm font-semibold text-slate-700 mt-2 mb-0.5">{line.replace(/^### /, '')}</div>;
+          if (/^- /.test(line) || /^\* /.test(line)) return <div key={i} className="text-slate-600 pl-3">• {line.replace(/^[-*] /, '')}</div>;
+          if (/^\d+\. /.test(line)) return <div key={i} className="text-slate-600 pl-3">{line}</div>;
+          if (line.startsWith('```') || line.startsWith('---')) return <div key={i} className="border-t border-slate-200 my-1" />;
+          if (line === '') return <div key={i} className="h-2" />;
+          return <div key={i} className="text-slate-700">{line}</div>;
+        })}
+      </div>
+      <p className="text-xs text-slate-400 mt-2">GitHub에서 불러온 원본 README입니다. 마크다운 원문 그대로 표시됩니다.</p>
     </Modal>
   );
 }
