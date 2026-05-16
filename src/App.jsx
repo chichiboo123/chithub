@@ -846,19 +846,21 @@ const cleanLines = (lines) => lines.filter((l) => l != null && l !== false).join
 const dedupeJoin = (arr) => Array.from(new Set(arr.filter(Boolean))).join(' ');
 
 // buildPromo 및 handleAIGenerate 에서 공유하는 JS 문자열 이스케이프 함수
-const escStr = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+// 비문자열(배열·객체 등)이 들어와도 크래시 없이 빈 문자열로 처리
+const toStr = (v) => (typeof v === 'string' ? v : '');
+const escStr = (s) => toStr(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
 
 function buildPromo(repo, meta) {
-  const title = (meta.appTitleKr || repo.name || '').trim();
-  const titleEn = (meta.appTitleEn || repo.name || '').trim();
-  const shortDesc = (meta.shortDescription || repo.description || '교육 활동에 활용할 수 있는 웹앱입니다.').trim();
-  const longDesc = (meta.longDescription || meta.shortDescription || repo.description || '').trim() || shortDesc;
-  const features = Array.isArray(meta.features) ? meta.features.filter(Boolean) : [];
-  const targetUsers = (meta.targetUsers || '학생과 교사').trim();
-  const useCase = (meta.useCase || '수업 및 연수 활동').trim();
-  const category = (meta.category || '').trim();
-  const status = (meta.status || '').trim();
-  const tone = meta.promotionTone || '친근함';
+  const title = (toStr(meta.appTitleKr) || repo.name || '').trim();
+  const titleEn = (toStr(meta.appTitleEn) || repo.name || '').trim();
+  const shortDesc = (toStr(meta.shortDescription) || repo.description || '교육 활동에 활용할 수 있는 웹앱입니다.').trim();
+  const longDesc = (toStr(meta.longDescription) || toStr(meta.shortDescription) || repo.description || '').trim() || shortDesc;
+  const features = Array.isArray(meta.features) ? meta.features.filter(f => typeof f === 'string' && f) : [];
+  const targetUsers = (toStr(meta.targetUsers) || '학생과 교사').trim();
+  const useCase = (toStr(meta.useCase) || '수업 및 연수 활동').trim();
+  const category = (toStr(meta.category) || '').trim();
+  const status = (toStr(meta.status) || '').trim();
+  const tone = toStr(meta.promotionTone) || '친근함';
   const url = getDeploymentUrl(repo, meta).url;
   const githubUrl = repo.html_url || '';
   const hashtagsRaw = Array.isArray(meta.hashtags) ? meta.hashtags.filter(Boolean) : [];
@@ -2285,24 +2287,26 @@ export default function App() {
 
       {/* Promo modal */}
       {promoRepo && currentPromoRepo && (
-        <PromoModal
-          repo={currentPromoRepo}
-          meta={currentPromoMeta}
-          lang={lang}
-          onClose={() => setPromoRepo(null)}
-          onCopy={async (text) => {
-            const ok = await copyToClipboard(text);
-            push(ok ? '클립보드에 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
-          }}
-          onDownload={(filename, content, mime) => {
-            downloadBlob(filename, content, mime);
-            push(`${filename} 파일을 내려받았습니다.`, 'success');
-          }}
-          geminiApiKey={settings.geminiApiKey}
-          token={effectiveToken}
-          savedPromo={promoData[promoRepo] || null}
-          onUpdatePromo={handleUpdatePromo}
-        />
+        <ModalErrorBoundary onClose={() => setPromoRepo(null)}>
+          <PromoModal
+            repo={currentPromoRepo}
+            meta={currentPromoMeta}
+            lang={lang}
+            onClose={() => setPromoRepo(null)}
+            onCopy={async (text) => {
+              const ok = await copyToClipboard(text);
+              push(ok ? '클립보드에 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
+            }}
+            onDownload={(filename, content, mime) => {
+              downloadBlob(filename, content, mime);
+              push(`${filename} 파일을 내려받았습니다.`, 'success');
+            }}
+            geminiApiKey={settings.geminiApiKey}
+            token={effectiveToken}
+            savedPromo={promoData[promoRepo] || null}
+            onUpdatePromo={handleUpdatePromo}
+          />
+        </ModalErrorBoundary>
       )}
 
       {/* README modal */}
@@ -2858,13 +2862,14 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true, onModelChange: setCurrentModel });
       setCurrentModel(null);
       const data = extractJson(text);
-      if (data.appTitleKr) set('appTitleKr', data.appTitleKr);
-      if (data.appTitleEn) set('appTitleEn', data.appTitleEn);
-      if (data.shortDescription) set('shortDescription', data.shortDescription);
-      if (data.longDescription) set('longDescription', data.longDescription);
-      if (data.category) set('category', data.category);
-      if (data.targetUsers) set('targetUsers', data.targetUsers);
-      if (data.useCase) set('useCase', data.useCase);
+      // AI 응답 필드가 string인 경우만 저장 (배열·객체 등 잘못된 타입 방어)
+      if (data.appTitleKr && typeof data.appTitleKr === 'string') set('appTitleKr', data.appTitleKr);
+      if (data.appTitleEn && typeof data.appTitleEn === 'string') set('appTitleEn', data.appTitleEn);
+      if (data.shortDescription && typeof data.shortDescription === 'string') set('shortDescription', data.shortDescription);
+      if (data.longDescription && typeof data.longDescription === 'string') set('longDescription', data.longDescription);
+      if (data.category && typeof data.category === 'string') set('category', data.category);
+      if (data.targetUsers && typeof data.targetUsers === 'string') set('targetUsers', data.targetUsers);
+      if (data.useCase && typeof data.useCase === 'string') set('useCase', data.useCase);
       if (Array.isArray(data.features) && data.features.length) {
         setFeaturesInput(data.features.join(', '));
       }
@@ -3058,6 +3063,39 @@ function Field({ label, children, full }) {
       {children}
     </div>
   );
+}
+
+/* ============================================================
+   ModalErrorBoundary — PromoModal 크래시 시 앱 전체 언마운트 방지
+============================================================ */
+
+class ModalErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <div
+        className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm grid place-items-end sm:place-items-center p-0 sm:p-4"
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl shadow-card flex flex-col">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+            <h3 className="font-bold text-slate-900">홍보문 생성 오류</h3>
+            <button className="btn-ghost" onClick={this.props.onClose} aria-label="Close">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="px-5 py-5 space-y-3 text-sm text-slate-600">
+            <p>홍보문을 불러오는 중 오류가 발생했습니다.</p>
+            <p className="text-xs text-slate-400">저장된 메타데이터 형식이 올바르지 않을 수 있습니다. 편집 창에서 데이터를 다시 저장하면 해결될 수 있습니다.</p>
+            <button className="btn-secondary" onClick={this.props.onClose}>닫기</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 }
 
 /* ============================================================
