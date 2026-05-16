@@ -1046,6 +1046,7 @@ export default function App() {
   const [loadingCommitsFor, setLoadingCommitsFor] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [filterLanguage, setFilterLanguage] = useState('');
@@ -1104,6 +1105,7 @@ export default function App() {
   }, []);
 
   const lang = settings.language;
+  const effectiveToken = tokenInput || (settings.saveToken ? settings.savedToken : '');
 
   /* --- persist settings (tokens only if checkbox on) --- */
   useEffect(() => {
@@ -1139,6 +1141,22 @@ export default function App() {
 
   const handleUpdatePromo = useCallback((fullName, data) => {
     setPromoData((prev) => ({ ...prev, [fullName]: data }));
+  }, []);
+
+  /* --- debounce search --- */
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearchTerm(searchTerm), 250);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
+
+  const hasActiveFilters = filterCategory || filterStatus || filterLanguage || filterVisibility || debouncedSearchTerm;
+  const handleClearFilters = useCallback(() => {
+    setSearchTerm('');
+    setDebouncedSearchTerm('');
+    setFilterCategory('');
+    setFilterStatus('');
+    setFilterLanguage('');
+    setFilterVisibility('');
   }, []);
 
   /* --- README fetch-and-cache --- */
@@ -1292,7 +1310,7 @@ export default function App() {
   }, [repoMeta]);
 
   const filtered = useMemo(() => {
-    const term = searchTerm.trim().toLowerCase();
+    const term = debouncedSearchTerm.trim().toLowerCase();
     let arr = merged.filter(({ repo, meta }) => {
       if (filterCategory && meta.category !== filterCategory) return false;
       if (filterStatus && meta.status !== filterStatus) return false;
@@ -1343,7 +1361,7 @@ export default function App() {
     });
 
     return arr;
-  }, [merged, searchTerm, filterCategory, filterStatus, filterLanguage, filterVisibility, sortBy]);
+  }, [merged, debouncedSearchTerm, filterCategory, filterStatus, filterLanguage, filterVisibility, sortBy]);
 
   /* --- summary counts --- */
   const summary = useMemo(() => {
@@ -1443,8 +1461,6 @@ export default function App() {
   };
 
   /* --- gist sync --- */
-  const effectiveToken = tokenInput || (settings.saveToken ? settings.savedToken : '');
-
   const pullInProgressRef = useRef(false);
   const lastPushedSnapshotRef = useRef(null);
   const autoPullDoneRef = useRef(false);
@@ -1637,7 +1653,7 @@ export default function App() {
             aria-expanded={!connectCollapsed}
           >
             <h2 className="text-base font-bold flex items-center gap-2">
-              <Github className="w-4 h-4" /> GitHub 연결
+              <Github className="w-4 h-4" /> {t(lang, 'connectSection')}
               {repos.length > 0 && (
                 <span className="text-xs font-normal text-emerald-600 bg-emerald-50 border border-emerald-200 rounded-full px-2 py-0.5">
                   {repos.length}개 로드됨
@@ -1770,49 +1786,63 @@ export default function App() {
 
         {/* Filters / view controls */}
         {repos.length > 0 && (
-          <section className="card p-3 sm:p-4">
-            {/* 1행: 검색 + 보기 모드 */}
+          <section className="card p-3 sm:p-4 sticky top-0 z-20 bg-white/95 backdrop-blur-sm shadow-sm">
+            {/* 1행: 검색 + 보기 모드 + 결과 수 */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-2">
               <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <label htmlFor="search" className="sr-only">{t(lang, 'search')}</label>
                 <input
                   id="search"
-                  className="input pl-9"
+                  className="input pl-9 pr-8"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   placeholder={`${t(lang, 'search')}…`}
                 />
+                {searchTerm && (
+                  <button
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    onClick={() => { setSearchTerm(''); setDebouncedSearchTerm(''); }}
+                    aria-label="검색어 지우기"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
-              <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1 self-stretch sm:self-auto">
-                <button
-                  className={`btn flex-1 sm:flex-initial ${
-                    viewMode === 'card'
-                      ? 'bg-white shadow-sm text-slate-900'
-                      : 'text-slate-500'
-                  }`}
-                  onClick={() => setViewMode('card')}
-                  aria-pressed={viewMode === 'card'}
-                >
-                  <LayoutGrid className="w-4 h-4" />
-                  <span className="hidden xs:inline sm:inline">{t(lang, 'viewCard')}</span>
-                </button>
-                <button
-                  className={`btn flex-1 sm:flex-initial ${
-                    viewMode === 'table'
-                      ? 'bg-white shadow-sm text-slate-900'
-                      : 'text-slate-500'
-                  }`}
-                  onClick={() => setViewMode('table')}
-                  aria-pressed={viewMode === 'table'}
-                >
-                  <TableIcon className="w-4 h-4" />
-                  <span className="hidden xs:inline sm:inline">{t(lang, 'viewTable')}</span>
-                </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-xs text-slate-500 whitespace-nowrap hidden sm:inline">
+                  <strong className="text-slate-700">{filtered.length}</strong>/{repos.length}
+                </span>
+                <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                  <button
+                    className={`btn flex-1 sm:flex-initial ${
+                      viewMode === 'card'
+                        ? 'bg-white shadow-sm text-slate-900'
+                        : 'text-slate-500'
+                    }`}
+                    onClick={() => setViewMode('card')}
+                    aria-pressed={viewMode === 'card'}
+                  >
+                    <LayoutGrid className="w-4 h-4" />
+                    <span className="hidden sm:inline">{t(lang, 'viewCard')}</span>
+                  </button>
+                  <button
+                    className={`btn flex-1 sm:flex-initial ${
+                      viewMode === 'table'
+                        ? 'bg-white shadow-sm text-slate-900'
+                        : 'text-slate-500'
+                    }`}
+                    onClick={() => setViewMode('table')}
+                    aria-pressed={viewMode === 'table'}
+                  >
+                    <TableIcon className="w-4 h-4" />
+                    <span className="hidden sm:inline">{t(lang, 'viewTable')}</span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            {/* 2행: 필터 */}
+            {/* 2행: 필터 + 초기화 */}
             <div className="mt-2 flex items-center gap-2 flex-wrap">
               <SelectField
                 label={t(lang, 'category')}
@@ -1822,7 +1852,7 @@ export default function App() {
                 placeholder={t(lang, 'statusAll')}
               />
               <SelectField
-                label="상태"
+                label={{ ko: '상태', en: 'Status', ja: 'ステータス' }[lang] || '상태'}
                 value={filterStatus}
                 onChange={setFilterStatus}
                 options={['', ...STATUS_OPTIONS]}
@@ -1841,7 +1871,7 @@ export default function App() {
                 onChange={setFilterVisibility}
                 options={['', 'public', 'private']}
                 placeholder={t(lang, 'statusAll')}
-                labelMap={{ public: '공개', private: '비공개' }}
+                labelMap={{ public: { ko: '공개', en: 'Public', ja: '公開' }[lang] || '공개', private: { ko: '비공개', en: 'Private', ja: '非公開' }[lang] || '비공개' }}
               />
               <div>
                 <label className="label sr-only" htmlFor="sort">{t(lang, 'sortBy')}</label>
@@ -1859,10 +1889,20 @@ export default function App() {
                   ))}
                 </select>
               </div>
+              {hasActiveFilters && (
+                <button
+                  className="btn-ghost text-xs py-1.5 px-2.5 text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200"
+                  onClick={handleClearFilters}
+                  aria-label="필터 초기화"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  {{ ko: '초기화', en: 'Clear', ja: 'リセット' }[lang] || '초기화'}
+                </button>
+              )}
             </div>
 
-            {/* 3행: 데이터 관리 + 결과 수 */}
-            <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+            {/* 3행: 데이터 관리 + 상태 */}
+            <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs">
               <DropdownMenu
                 label={t(lang, 'dataMenu')}
                 icon={<MoreHorizontal className="w-3.5 h-3.5" />}
@@ -1909,8 +1949,8 @@ export default function App() {
                   <Cloud className="w-3 h-3" /> 자동 동기화
                 </span>
               )}
-              <span className="text-slate-500 ml-auto whitespace-nowrap">
-                결과 <strong className="text-slate-700">{filtered.length}</strong>개
+              <span className="text-slate-500 ml-auto whitespace-nowrap sm:hidden">
+                <strong className="text-slate-700">{filtered.length}</strong>/{repos.length}
               </span>
             </div>
           </section>
@@ -1934,7 +1974,11 @@ export default function App() {
           {!loadingRepos && repos.length > 0 && filtered.length === 0 && (
             <div className="card p-8 text-center text-slate-600">
               <Search className="w-6 h-6 mx-auto text-slate-400 mb-2" />
-              <p>{t(lang, 'noResults')}</p>
+              <p className="mb-3">{t(lang, 'noResults')}</p>
+              <button className="btn-secondary text-sm mx-auto" onClick={handleClearFilters}>
+                <X className="w-3.5 h-3.5" />
+                {{ ko: '필터 초기화', en: 'Clear filters', ja: 'フィルターをリセット' }[lang] || '필터 초기화'}
+              </button>
             </div>
           )}
 
