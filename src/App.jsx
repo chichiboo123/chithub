@@ -932,31 +932,18 @@ function buildPromo(repo, meta) {
     '※ 본 자료는 칫허브(Chithub)에서 자동 생성되었으며, 필요에 맞게 수정해 활용하세요.',
   ]);
 
-  /* === 5) Portfolio JSON (richer) === */
-  const portfolio = JSON.stringify(
-    {
-      title,
-      englishTitle: titleEn,
-      category,
-      status,
-      shortDescription: shortDesc,
-      longDescription: longDesc,
-      targetUsers,
-      useCase,
-      features,
-      tone,
-      url,
-      github: githubUrl,
-      language: repo.language || '',
-      stars: repo.stargazers_count || 0,
-      forks: repo.forks_count || 0,
-      hashtags,
-      createdAt: repo.created_at || '',
-      updatedAt: repo.updated_at || '',
-    },
-    null,
-    2
-  );
+  /* === 5) Portfolio JS object (custom format) === */
+  const esc = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  const portfolioTagStr = hashtags.join(' '); // keep # prefix as-is
+  const portfolio = `{
+  id: '',
+  category: '${esc(category)}',
+  title: '${esc(title)}',
+  engTitle: '${esc(titleEn)}',
+  description: '${esc(longDesc || shortDesc)}',
+  tags: '${esc(portfolioTagStr)}',
+  imageUrl: '${esc(meta.thumbnailUrl || '')}',
+},`;
 
   /* === 6) README (with badges + sections) === */
   const badge = (label, value, color = 'blue') =>
@@ -1071,6 +1058,10 @@ export default function App() {
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
   const [helpOpen, setHelpOpen] = useState(false);
+  const [readmeCache, setReadmeCache] = useState({}); // { [fullName]: null | string }
+  const [readmeViewRepo, setReadmeViewRepo] = useState(null); // fullName whose README to show
+  const [promoData, setPromoData] = useState(() => readJSON('chithubPromoData', {}));
+  const promoDataRef = useRef(promoData);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
@@ -1139,6 +1130,33 @@ export default function App() {
   useEffect(() => {
     writeJSON(STORAGE_KEYS.repos, repos);
   }, [repos]);
+
+  /* --- persist promoData --- */
+  useEffect(() => {
+    promoDataRef.current = promoData;
+    writeJSON('chithubPromoData', promoData);
+  }, [promoData]);
+
+  const handleUpdatePromo = useCallback((fullName, data) => {
+    setPromoData((prev) => ({ ...prev, [fullName]: data }));
+  }, []);
+
+  /* --- README fetch-and-cache --- */
+  const handleViewReadme = useCallback(async (fullName) => {
+    if (readmeCache[fullName] !== undefined) {
+      if (readmeCache[fullName]) setReadmeViewRepo(fullName);
+      else push('이 리포지토리에는 README가 없습니다.', 'info');
+      return;
+    }
+    try {
+      const md = await fetchGithubReadme(fullName, effectiveToken);
+      setReadmeCache((prev) => ({ ...prev, [fullName]: md }));
+      if (md) setReadmeViewRepo(fullName);
+      else push('이 리포지토리에는 README가 없습니다.', 'info');
+    } catch {
+      push('README를 불러오는 중 오류가 발생했습니다.', 'error');
+    }
+  }, [readmeCache, effectiveToken, push]);
 
   /* --- ESC to close modals --- */
   useEffect(() => {
@@ -1444,10 +1462,11 @@ export default function App() {
     setGistSyncing(true);
     try {
       const metaSnapshot = repoMetaRef.current;
+      const promoSnapshot = promoDataRef.current;
       const payload = {
         exportedAt: new Date().toISOString(),
         app: 'chithub',
-        version: 2,
+        version: 3,
         settings: {
           language: settings.language,
           savedUsername: settings.savedUsername || '',
@@ -1456,6 +1475,7 @@ export default function App() {
           gistId: settings.gistId || '',
         },
         repoMeta: metaSnapshot,
+        promoData: promoSnapshot,
       };
       const gist = await apiPushGist(effectiveToken, settings.gistId || '', payload);
       lastPushedSnapshotRef.current = JSON.stringify(metaSnapshot);
@@ -1493,6 +1513,9 @@ export default function App() {
         lastPushedSnapshotRef.current = JSON.stringify(merged);
       } else {
         lastPushedSnapshotRef.current = JSON.stringify(repoMetaRef.current);
+      }
+      if (data.promoData && typeof data.promoData === 'object') {
+        setPromoData((prev) => ({ ...prev, ...data.promoData }));
       }
       setSettings((s) => ({
         ...s,
@@ -1539,12 +1562,12 @@ export default function App() {
     handlePullFromGist(settings.gistId, { silent: true });
   }, [settings.autoSync, settings.gistId, effectiveToken, handlePullFromGist]);
 
-  /* debounced auto-push when repoMeta changes (only after a successful sync baseline exists) */
+  /* debounced auto-push when repoMeta or promoData changes */
   useEffect(() => {
     if (!settings.autoSync) return;
     if (!settings.gistId || !effectiveToken) return;
     if (pullInProgressRef.current) return;
-    if (lastPushedSnapshotRef.current === null) return; // require initial sync first
+    if (lastPushedSnapshotRef.current === null) return;
     const snapshot = JSON.stringify(repoMeta);
     if (snapshot === lastPushedSnapshotRef.current) return;
     clearTimeout(pushTimerRef.current);
@@ -1552,7 +1575,7 @@ export default function App() {
       handlePushToGist(true);
     }, 4000);
     return () => clearTimeout(pushTimerRef.current);
-  }, [repoMeta, settings.autoSync, settings.gistId, effectiveToken, handlePushToGist]);
+  }, [repoMeta, promoData, settings.autoSync, settings.gistId, effectiveToken, handlePushToGist]);
 
   /* --- editing repo data --- */
   const currentEditingMeta = editingRepo ? getMeta(editingRepo) : null;
@@ -1928,6 +1951,8 @@ export default function App() {
                   onLoadCommits={() => handleLoadCommits(repo.full_name)}
                   commits={commitsByRepo[repo.full_name]}
                   loadingCommits={loadingCommitsFor === repo.full_name}
+                  readmeStatus={readmeCache[repo.full_name]}
+                  onViewReadme={() => handleViewReadme(repo.full_name)}
                 />
               ))}
             </div>
@@ -1945,6 +1970,7 @@ export default function App() {
                     <th className="px-3 py-3 font-semibold whitespace-nowrap">생성 / 수정</th>
                     <th className="px-3 py-3 font-semibold whitespace-nowrap">활동</th>
                     <th className="px-3 py-3 font-semibold">메모</th>
+                    <th className="px-3 py-3 font-semibold text-center">README</th>
                     <th className="px-3 py-3 font-semibold text-center">링크</th>
                     <th className="px-3 py-3 font-semibold text-right">동작</th>
                   </tr>
@@ -1994,8 +2020,8 @@ export default function App() {
                         </td>
                         <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-600 leading-tight">
                           <div title="최초 생성일">📅 {formatDate(repo.created_at)}</div>
-                          <div className="text-slate-500" title="최종 수정일">
-                            ✏️ {formatDate(repo.updated_at)}
+                          <div className="text-slate-500 flex items-center gap-1" title="최종 수정일">
+                            <Clock className="w-3 h-3" /> {formatDate(repo.updated_at)}
                           </div>
                         </td>
                         <td className="px-3 py-3 text-xs text-slate-600 whitespace-nowrap">
@@ -2017,6 +2043,27 @@ export default function App() {
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          {(() => {
+                            const rs = readmeCache[repo.full_name];
+                            return (
+                              <button
+                                onClick={() => handleViewReadme(repo.full_name)}
+                                title={rs === null ? 'README 없음' : rs ? 'README 보기' : 'README 확인하기'}
+                                className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors ${
+                                  rs === null
+                                    ? 'text-slate-300 border-slate-100 cursor-default'
+                                    : rs
+                                    ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                                    : 'text-slate-400 border-slate-200 hover:text-brand-600 hover:border-brand-300'
+                                }`}
+                              >
+                                <BookOpen className="w-3.5 h-3.5 shrink-0" />
+                                <span>{rs === null ? '없음' : rs ? '있음' : '확인'}</span>
+                              </button>
+                            );
+                          })()}
                         </td>
                         <td className="px-3 py-3 text-center">
                           <div className="inline-flex items-center gap-1">
@@ -2138,6 +2185,17 @@ export default function App() {
           }}
           geminiApiKey={settings.geminiApiKey}
           token={effectiveToken}
+          savedPromo={promoData[promoRepo] || null}
+          onUpdatePromo={handleUpdatePromo}
+        />
+      )}
+
+      {/* README modal */}
+      {readmeViewRepo && readmeCache[readmeViewRepo] && (
+        <ReadmeModal
+          fullName={readmeViewRepo}
+          content={readmeCache[readmeViewRepo]}
+          onClose={() => setReadmeViewRepo(null)}
         />
       )}
 
@@ -2423,7 +2481,7 @@ function Modal({ title, onClose, children, footer, wide }) {
    RepoCard
 ============================================================ */
 
-function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits }) {
+function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme }) {
   const deploy = getDeploymentUrl(repo, meta);
 
   return (
@@ -2577,6 +2635,20 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
               )}
             </a>
           )}
+          <button
+            onClick={onViewReadme}
+            title={readmeStatus === null ? 'README 없음' : readmeStatus ? 'README 보기' : 'README 확인'}
+            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border transition-colors ${
+              readmeStatus === null
+                ? 'text-slate-300 border-slate-200 cursor-default'
+                : readmeStatus
+                ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
+                : 'text-slate-500 border-slate-200 hover:text-brand-700 hover:border-brand-300'
+            }`}
+          >
+            <BookOpen className="w-3 h-3 shrink-0" />
+            <span>{readmeStatus === null ? '없음' : readmeStatus ? 'README' : 'README?'}</span>
+          </button>
           <button
             className="ml-auto text-slate-500 hover:text-brand-700 inline-flex items-center gap-1 disabled:opacity-50"
             onClick={onLoadCommits}
@@ -2862,15 +2934,22 @@ function Field({ label, children, full }) {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, savedPromo, onUpdatePromo }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
-  const [aiPromo, setAiPromo] = useState({});
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
-  const [showAi, setShowAi] = useState(false);
   const [githubReadme, setGithubReadme] = useState(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
+
+  // Unified editable content: driven by App-level promoData (Gist-synced)
+  const [content, setContent] = useState(() => savedPromo?.content || {});
+  const [aiGeneratedAt, setAiGeneratedAt] = useState(() => savedPromo?.generatedAt || null);
+
+  // Propagate changes up to App (which persists to localStorage + Gist)
+  useEffect(() => {
+    onUpdatePromo(repo.full_name, { content, generatedAt: aiGeneratedAt });
+  }, [content, aiGeneratedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false;
@@ -2886,15 +2965,31 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     { id: 'sns', label: t(lang, 'promoSns'), content: promo.sns, ext: 'txt', mime: 'text/plain' },
     { id: 'youtube', label: t(lang, 'promoYoutube'), content: promo.youtube, ext: 'txt', mime: 'text/plain' },
     { id: 'training', label: t(lang, 'promoTraining'), content: promo.training, ext: 'txt', mime: 'text/plain' },
-    { id: 'json', label: t(lang, 'promoJson'), content: promo.portfolio, ext: 'json', mime: 'application/json' },
+    { id: 'json', label: t(lang, 'promoJson'), content: promo.portfolio, ext: 'js', mime: 'text/javascript' },
     { id: 'readme', label: t(lang, 'promoReadme'), content: promo.readme, ext: 'md', mime: 'text/markdown' },
   ];
 
   const active = tabs.find((tb) => tb.id === tab);
   const baseName = (meta.appTitleEn || repo.name || 'chithub').toLowerCase().replace(/[^a-z0-9-_]+/g, '-');
 
-  const hasAiContent = Object.keys(aiPromo).length > 0;
-  const activeContent = (showAi && hasAiContent && aiPromo[tab]) ? aiPromo[tab] : active.content;
+  // Content priority: user-saved > template
+  const getContent = (tabId) => content[tabId] !== undefined ? content[tabId] : (tabs.find(t => t.id === tabId)?.content || '');
+  const activeContent = getContent(tab);
+  const isModified = (tabId) => content[tabId] !== undefined && content[tabId] !== (tabs.find(t => t.id === tabId)?.content || '');
+  const hasAnyModified = tabs.some(t => isModified(t.id));
+
+  const handleEdit = (value) => setContent(prev => ({ ...prev, [tab]: value }));
+
+  const handleResetTab = () => {
+    setContent(prev => { const next = { ...prev }; delete next[tab]; return next; });
+  };
+
+  const handleClearAll = () => {
+    if (!window.confirm('AI 생성 결과와 수정 내용을 모두 초기화합니다. 계속하시겠습니까?')) return;
+    setContent({});
+    setAiGeneratedAt(null);
+    writeJSON(storageKey, null);
+  };
 
   const handleAIGenerate = async () => {
     if (!geminiApiKey) {
@@ -2937,26 +3032,25 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
 - GitHub URL: ${githubUrl}
 - 홍보 톤: ${tone}${readmeSection}
 
-다음 JSON 형식으로만 응답하세요 (다른 텍스트 없이):
-{
-  "oneLiner": "한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)",
-  "sns": "SNS 게시글 (이모지·줄바꿈·해시태그 포함, 자연스러운 소셜미디어 문체)",
-  "youtube": "유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)",
-  "training": "연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)",
-  "readme": "README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식, 배지 포함)"
-}`;
+다음 JSON 키로 각 형식에 맞는 홍보문을 작성하세요:
+oneLiner: 한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)
+sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
+youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
+training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
+readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)`;
 
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
-      setAiPromo({
-        oneLiner: data.oneLiner || '',
-        sns: data.sns || '',
-        youtube: data.youtube || '',
-        training: data.training || '',
-        json: promo.portfolio,
-        readme: data.readme || '',
-      });
-      setShowAi(true);
+      const now = new Date().toISOString();
+      setContent(prev => ({
+        ...prev,
+        oneLiner: data.oneLiner || prev.oneLiner || '',
+        sns: data.sns || prev.sns || '',
+        youtube: data.youtube || prev.youtube || '',
+        training: data.training || prev.training || '',
+        readme: data.readme || prev.readme || '',
+      }));
+      setAiGeneratedAt(now);
     } catch (err) {
       setAiError(err?.message || 'AI 생성 중 오류가 발생했습니다.');
     } finally {
@@ -2970,55 +3064,64 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
       onClose={onClose}
       wide
       footer={
-        <div className="flex flex-wrap items-center gap-2">
-          {/* AI 원클릭 생성 */}
-          <button
-            className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-            onClick={handleAIGenerate}
-            disabled={aiLoading || !geminiApiKey}
-            title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : undefined}
-          >
-            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {aiLoading ? 'AI 생성 중...' : 'AI 원클릭 생성'}
-          </button>
-          {hasAiContent && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
-              className={`px-3 py-2 rounded-lg text-sm font-semibold border flex items-center gap-1.5 shrink-0 ${
-                showAi
-                  ? 'bg-purple-100 text-purple-700 border-purple-300'
-                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
-              }`}
-              onClick={() => setShowAi((v) => !v)}
+              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+              onClick={handleAIGenerate}
+              disabled={aiLoading || !geminiApiKey}
+              title={!geminiApiKey ? '설정에서 Gemini API 키를 먼저 입력해주세요' : 'AI로 전체 홍보문 생성/재생성'}
             >
-              {showAi ? '✨ AI 보기 중' : '📋 템플릿 보기 중'}
+              {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {aiLoading ? 'AI 생성 중...' : aiGeneratedAt ? 'AI 재생성' : 'AI 원클릭 생성'}
             </button>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            <button className="btn-secondary" onClick={() => onCopy(activeContent)}>
-              <Copy className="w-4 h-4" /> {t(lang, 'copy')}
-            </button>
-            <button
-              className="btn-primary"
-              onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, activeContent, active.mime)}
-            >
-              <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
-            </button>
+            {hasAnyModified && (
+              <button
+                className="px-3 py-2 rounded-lg text-sm font-semibold border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1.5 shrink-0"
+                onClick={handleClearAll}
+                title="AI 결과와 수정 내용 모두 초기화"
+              >
+                <Trash2 className="w-4 h-4" /> 전체 초기화
+              </button>
+            )}
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <button className="btn-secondary" onClick={() => onCopy(activeContent)}>
+                <Copy className="w-4 h-4" /> {t(lang, 'copy')}
+              </button>
+              <button
+                className="btn-primary"
+                onClick={() => onDownload(`${baseName}-${active.id}.${active.ext}`, activeContent, active.mime)}
+              >
+                <Download className="w-4 h-4" /> {active.ext.toUpperCase()}
+              </button>
+            </div>
           </div>
+          {aiGeneratedAt && (
+            <p className="text-[11px] text-purple-500 flex items-center gap-1">
+              <Sparkles className="w-3 h-3" /> AI 생성 완료 · {new Date(aiGeneratedAt).toLocaleString('ko-KR')} · 자동저장됨
+            </p>
+          )}
         </div>
       }
     >
-      {/* README 읽기 상태 배너 */}
-      <div className="mb-2 rounded-lg border text-xs p-2 flex items-center gap-2">
-        {readmeLoading ? (
-          <><Loader2 className="w-3.5 h-3.5 animate-spin text-slate-400 shrink-0" /><span className="text-slate-500">GitHub README 읽는 중...</span></>
-        ) : githubReadme ? (
-          <><BookOpen className="w-3.5 h-3.5 text-emerald-600 shrink-0" /><span className="text-emerald-700">GitHub README를 읽었습니다. AI 생성 시 자동으로 참고합니다.</span></>
-        ) : (
-          <><BookOpen className="w-3.5 h-3.5 text-slate-400 shrink-0" /><span className="text-slate-400">README 없음 — 앱 정보 기반으로 홍보문을 생성합니다.</span></>
+      {/* README + 자동저장 상태 */}
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+        <div className="flex items-center gap-1.5 rounded-lg border px-2 py-1">
+          {readmeLoading ? (
+            <><Loader2 className="w-3 h-3 animate-spin text-slate-400" /><span className="text-slate-500">README 읽는 중...</span></>
+          ) : githubReadme ? (
+            <><BookOpen className="w-3 h-3 text-emerald-600" /><span className="text-emerald-700">README 읽음 (AI 참고)</span></>
+          ) : (
+            <><BookOpen className="w-3 h-3 text-slate-400" /><span className="text-slate-400">README 없음</span></>
+          )}
+        </div>
+        {hasAnyModified && (
+          <span className="flex items-center gap-1 text-amber-600 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1">
+            <Save className="w-3 h-3" /> 자동저장됨
+          </span>
         )}
       </div>
 
-      {/* AI 안내 배너 */}
       {!geminiApiKey && (
         <div className="mb-3 rounded-lg bg-purple-50 border border-purple-200 text-purple-800 text-xs p-2.5 flex items-center gap-2">
           <Sparkles className="w-3.5 h-3.5 shrink-0" />
@@ -3031,7 +3134,8 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
         </div>
       )}
 
-      <div className="flex flex-wrap gap-1.5 mb-3">
+      {/* 탭 + 현재 탭 초기화 */}
+      <div className="flex flex-wrap gap-1.5 mb-2">
         {tabs.map((tb) => (
           <button
             key={tb.id}
@@ -3042,28 +3146,61 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
             aria-pressed={tab === tb.id}
           >
             {tb.label}
-            {showAi && hasAiContent && aiPromo[tb.id] && (
-              <span className="text-[10px] bg-purple-200 text-purple-800 rounded-full px-1">AI</span>
+            {isModified(tb.id) && (
+              <span className="text-[10px] bg-purple-200 text-purple-800 rounded-full px-1">수정</span>
             )}
           </button>
         ))}
       </div>
+
+      {/* 현재 탭 초기화 버튼 */}
+      {isModified(tab) && (
+        <div className="flex justify-end mb-1">
+          <button
+            className="text-xs text-slate-400 hover:text-red-500 flex items-center gap-1"
+            onClick={handleResetTab}
+            title="이 탭의 내용을 기본값으로 초기화"
+          >
+            <RefreshCcw className="w-3 h-3" /> 이 탭 초기화
+          </button>
+        </div>
+      )}
+
       <textarea
-        readOnly
-        className={`input font-mono text-xs min-h-[260px] w-full ${showAi && hasAiContent && aiPromo[tab] ? 'border-purple-300 bg-purple-50/30' : ''}`}
+        className="input font-mono text-xs min-h-[260px] w-full resize-y"
         value={activeContent}
+        onChange={(e) => handleEdit(e.target.value)}
         aria-label={active.label}
+        placeholder={`${active.label} 내용을 입력하거나 AI로 생성하세요.`}
       />
-      {showAi && hasAiContent && aiPromo[tab] && (
-        <p className="text-xs text-purple-600 mt-1.5 flex items-center gap-1">
-          <Sparkles className="w-3 h-3" /> AI가 생성한 홍보글입니다. 내용을 확인 후 복사하세요.
-        </p>
-      )}
-      {(!showAi || !hasAiContent) && (
-        <p className="text-xs text-slate-500 mt-2">
-          편집 화면에서 더 자세한 정보를 입력할수록 홍보 자료의 품질이 좋아집니다.
-        </p>
-      )}
+      <p className="text-xs text-slate-400 mt-1.5">
+        직접 수정 가능 · 변경 내용은 자동으로 저장됩니다.
+      </p>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ReadmeModal
+============================================================ */
+
+function ReadmeModal({ fullName, content, onClose }) {
+  const lines = content.split('\n');
+  return (
+    <Modal title={`README · ${fullName}`} onClose={onClose} wide>
+      <div className="font-mono text-xs leading-relaxed whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-4 max-h-[60vh] overflow-y-auto">
+        {lines.map((line, i) => {
+          if (/^# /.test(line)) return <div key={i} className="text-xl font-bold text-slate-900 mt-1 mb-1">{line.replace(/^# /, '')}</div>;
+          if (/^## /.test(line)) return <div key={i} className="text-base font-bold text-slate-800 mt-3 mb-1 border-b border-slate-200 pb-0.5">{line.replace(/^## /, '')}</div>;
+          if (/^### /.test(line)) return <div key={i} className="text-sm font-semibold text-slate-700 mt-2 mb-0.5">{line.replace(/^### /, '')}</div>;
+          if (/^- /.test(line) || /^\* /.test(line)) return <div key={i} className="text-slate-600 pl-3">• {line.replace(/^[-*] /, '')}</div>;
+          if (/^\d+\. /.test(line)) return <div key={i} className="text-slate-600 pl-3">{line}</div>;
+          if (line.startsWith('```') || line.startsWith('---')) return <div key={i} className="border-t border-slate-200 my-1" />;
+          if (line === '') return <div key={i} className="h-2" />;
+          return <div key={i} className="text-slate-700">{line}</div>;
+        })}
+      </div>
+      <p className="text-xs text-slate-400 mt-2">GitHub에서 불러온 원본 README입니다. 마크다운 원문 그대로 표시됩니다.</p>
     </Modal>
   );
 }
