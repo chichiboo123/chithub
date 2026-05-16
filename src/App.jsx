@@ -673,13 +673,13 @@ async function apiPullGist(token, gistId) {
    Gemini AI API (free tier)
 ============================================================ */
 
-// 무료 Flash 모델 — 업데이트 시 이 한 줄만 수정
-// Fallback order: try each model sequentially on 429 (rate limit exceeded)
+// 무료 Flash 모델 폴백 순서 — 429(한도 초과) 시 다음 모델로 자동 전환
+// gemini-2.5-flash: 무료 ~20 RPD / gemini-2.0-flash: 무료 1500 RPD / gemini-1.5-flash: 무료 1500 RPD / gemini-1.5-flash-8b: 무료 1500 RPD
 const GEMINI_MODELS = [
   'gemini-2.5-flash',
-  'gemini-3-flash',
-  'gemini-3.1-flash-lite',
   'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
 ];
 
 async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
@@ -1187,6 +1187,31 @@ export default function App() {
     setFilterLanguage('');
     setFilterVisibility('');
   }, []);
+
+  /* --- README 백그라운드 사전 로딩 (repos 변경 시 자동 실행) --- */
+  useEffect(() => {
+    if (!repos.length) return;
+    let cancelled = false;
+    const unchecked = repos.filter((r) => readmeCache[r.full_name] === undefined);
+    if (!unchecked.length) return;
+
+    const fetchQueue = async () => {
+      for (const repo of unchecked) {
+        if (cancelled) break;
+        try {
+          const md = await fetchGithubReadme(repo.full_name, effectiveToken);
+          if (!cancelled) setReadmeCache((prev) => ({ ...prev, [repo.full_name]: md }));
+        } catch {
+          if (!cancelled) setReadmeCache((prev) => ({ ...prev, [repo.full_name]: null }));
+        }
+        // 각 요청 사이 200ms 지연으로 API 속도 제한 준수
+        if (!cancelled) await new Promise((r) => setTimeout(r, 200));
+      }
+    };
+    fetchQueue();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repos, effectiveToken]);
 
   /* --- README fetch-and-cache --- */
   const handleViewReadme = useCallback(async (fullName) => {
@@ -2120,20 +2145,19 @@ export default function App() {
                         <td className="px-3 py-3 text-center">
                           {(() => {
                             const rs = readmeCache[repo.full_name];
+                            if (rs === null) return <span className="text-slate-300 text-xs">—</span>;
                             return (
                               <button
-                                onClick={() => handleViewReadme(repo.full_name)}
-                                title={rs === null ? 'README 없음' : rs ? 'README 보기' : 'README 확인하기'}
+                                onClick={rs ? () => handleViewReadme(repo.full_name) : undefined}
+                                title={rs ? 'README 보기' : '로딩 중...'}
                                 className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs border transition-colors ${
-                                  rs === null
-                                    ? 'text-slate-300 border-slate-100 cursor-default'
-                                    : rs
-                                    ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
-                                    : 'text-slate-400 border-slate-200 hover:text-brand-600 hover:border-brand-300'
+                                  rs
+                                    ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 cursor-pointer'
+                                    : 'text-slate-300 border-slate-100 cursor-default'
                                 }`}
                               >
                                 <BookOpen className="w-3.5 h-3.5 shrink-0" />
-                                <span>{rs === null ? '없음' : rs ? '있음' : '확인'}</span>
+                                <span>{rs ? '있음' : '…'}</span>
                               </button>
                             );
                           })()}
@@ -2708,20 +2732,20 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
               )}
             </a>
           )}
-          <button
-            onClick={onViewReadme}
-            title={readmeStatus === null ? 'README 없음' : readmeStatus ? 'README 보기' : 'README 확인'}
-            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border transition-colors ${
-              readmeStatus === null
-                ? 'text-slate-300 border-slate-200 cursor-default'
-                : readmeStatus
-                ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100'
-                : 'text-slate-500 border-slate-200 hover:text-brand-700 hover:border-brand-300'
-            }`}
-          >
-            <BookOpen className="w-3 h-3 shrink-0" />
-            <span>{readmeStatus === null ? '없음' : readmeStatus ? 'README' : 'README?'}</span>
-          </button>
+          {readmeStatus !== null && (
+            <button
+              onClick={readmeStatus ? onViewReadme : undefined}
+              title={readmeStatus ? 'README 보기' : '로딩 중...'}
+              className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border transition-colors ${
+                readmeStatus
+                  ? 'text-emerald-600 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 cursor-pointer'
+                  : 'text-slate-300 border-slate-100 cursor-default'
+              }`}
+            >
+              <BookOpen className="w-3 h-3 shrink-0" />
+              <span>{readmeStatus ? 'README' : '…'}</span>
+            </button>
+          )}
           <button
             className="ml-auto text-slate-500 hover:text-brand-700 inline-flex items-center gap-1 disabled:opacity-50"
             onClick={onLoadCommits}
@@ -3061,7 +3085,6 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     if (!window.confirm('AI 생성 결과와 수정 내용을 모두 초기화합니다. 계속하시겠습니까?')) return;
     setContent({});
     setAiGeneratedAt(null);
-    writeJSON(storageKey, null);
   };
 
   const handleAIGenerate = async () => {
@@ -3089,6 +3112,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
         ? `\n[GitHub README (실제 프로젝트 설명 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
         : '';
 
+      const portfolioTagsStr = hashtags.join(' ');
       const prompt = `당신은 한국 교사가 만든 교육용 웹앱의 전문 홍보 카피라이터입니다.
 아래 앱 정보를 바탕으로 각 형식에 맞는 고품질 홍보문을 한국어로 작성해주세요.
 
@@ -3100,7 +3124,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
 - 활용 대상: ${targetUsers}
 - 활용 장면: ${useCase}
 - 주요 기능: ${features.join(', ') || '(정보 없음)'}
-- 해시태그: ${hashtags.join(' ') || '#에듀테크 #교육'}
+- 해시태그: ${portfolioTagsStr || '#에듀테크 #교육'}
 - 배포 URL: ${url || '(없음)'}
 - GitHub URL: ${githubUrl}
 - 홍보 톤: ${tone}${readmeSection}
@@ -3110,7 +3134,17 @@ oneLiner: 한 줄 소개 (이모지 포함, 70자 이내, ${tone} 톤으로)
 sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
 youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
 training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
-readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)`;
+readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)
+json: 포트폴리오 JS 오브젝트 문자열 — 반드시 아래 양식을 그대로 따르고 작은따옴표 사용, description은 자연스러운 한국어 홍보 문장으로 작성:
+{
+  id: '',
+  category: '${category}',
+  title: '${title.replace(/'/g, "\\'")}',
+  engTitle: '${titleEn.replace(/'/g, "\\'")}',
+  description: '(자연스러운 홍보 설명 1~2문장, ${tone} 톤)',
+  tags: '${portfolioTagsStr}',
+  imageUrl: '${meta.thumbnailUrl || ''}',
+},`;
 
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
@@ -3122,6 +3156,7 @@ readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)`;
         youtube: data.youtube || prev.youtube || '',
         training: data.training || prev.training || '',
         readme: data.readme || prev.readme || '',
+        json: data.json || prev.json || '',
       }));
       setAiGeneratedAt(now);
     } catch (err) {
