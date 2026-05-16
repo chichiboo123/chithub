@@ -1093,6 +1093,7 @@ export default function App() {
 
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
+  const [promoAutoGenerate, setPromoAutoGenerate] = useState(false); // AI 자동채우기 후 홍보문 자동생성 트리거
   const [helpOpen, setHelpOpen] = useState(false);
   const [readmeCache, setReadmeCache] = useState({}); // { [fullName]: null | string }
   const [readmeViewRepo, setReadmeViewRepo] = useState(null); // fullName whose README to show
@@ -2282,17 +2283,30 @@ export default function App() {
           }}
           geminiApiKey={settings.geminiApiKey}
           token={effectiveToken}
+          onAutoPromo={
+            // 기존 홍보문(AI 생성 이력)이 없을 때만 자동생성 콜백 전달
+            !promoData[editingRepo]?.generatedAt
+              ? (patch) => {
+                  updateMeta(editingRepo, { ...patch, lastCheckedAt: new Date().toISOString() });
+                  setEditingRepo(null);
+                  setPromoAutoGenerate(true);
+                  setPromoRepo(editingRepo);
+                  push('메타데이터를 저장하고 홍보문을 자동 생성합니다.', 'success');
+                }
+              : null
+          }
         />
       )}
 
       {/* Promo modal */}
       {promoRepo && currentPromoRepo && (
-        <ModalErrorBoundary onClose={() => setPromoRepo(null)}>
+        <ModalErrorBoundary onClose={() => { setPromoRepo(null); setPromoAutoGenerate(false); }}>
           <PromoModal
             repo={currentPromoRepo}
             meta={currentPromoMeta}
             lang={lang}
-            onClose={() => setPromoRepo(null)}
+            autoGenerate={promoAutoGenerate}
+            onClose={() => { setPromoRepo(null); setPromoAutoGenerate(false); }}
             onCopy={async (text) => {
               const ok = await copyToClipboard(text);
               push(ok ? '클립보드에 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
@@ -2791,7 +2805,7 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
    EditModal
 ============================================================ */
 
-function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey, token }) {
+function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey, token, onAutoPromo }) {
   const [form, setForm] = useState(() => ({
     ...defaultRepoMeta(),
     ...meta,
@@ -2863,18 +2877,27 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
       setCurrentModel(null);
       const data = extractJson(text);
       // AI 응답 필드가 string인 경우만 저장 (배열·객체 등 잘못된 타입 방어)
-      if (data.appTitleKr && typeof data.appTitleKr === 'string') set('appTitleKr', data.appTitleKr);
-      if (data.appTitleEn && typeof data.appTitleEn === 'string') set('appTitleEn', data.appTitleEn);
-      if (data.shortDescription && typeof data.shortDescription === 'string') set('shortDescription', data.shortDescription);
-      if (data.longDescription && typeof data.longDescription === 'string') set('longDescription', data.longDescription);
-      if (data.category && typeof data.category === 'string') set('category', data.category);
-      if (data.targetUsers && typeof data.targetUsers === 'string') set('targetUsers', data.targetUsers);
-      if (data.useCase && typeof data.useCase === 'string') set('useCase', data.useCase);
+      // 동시에 next 스냅샷을 구성 (onAutoPromo 전달용 — set()은 비동기라 직접 누적)
+      const nextMeta = { ...form };
+      if (data.appTitleKr && typeof data.appTitleKr === 'string') { set('appTitleKr', data.appTitleKr); nextMeta.appTitleKr = data.appTitleKr; }
+      if (data.appTitleEn && typeof data.appTitleEn === 'string') { set('appTitleEn', data.appTitleEn); nextMeta.appTitleEn = data.appTitleEn; }
+      if (data.shortDescription && typeof data.shortDescription === 'string') { set('shortDescription', data.shortDescription); nextMeta.shortDescription = data.shortDescription; }
+      if (data.longDescription && typeof data.longDescription === 'string') { set('longDescription', data.longDescription); nextMeta.longDescription = data.longDescription; }
+      if (data.category && typeof data.category === 'string') { set('category', data.category); nextMeta.category = data.category; }
+      if (data.targetUsers && typeof data.targetUsers === 'string') { set('targetUsers', data.targetUsers); nextMeta.targetUsers = data.targetUsers; }
+      if (data.useCase && typeof data.useCase === 'string') { set('useCase', data.useCase); nextMeta.useCase = data.useCase; }
       if (Array.isArray(data.features) && data.features.length) {
         setFeaturesInput(data.features.join(', '));
+        nextMeta.features = data.features;
       }
       if (Array.isArray(data.hashtags) && data.hashtags.length) {
         setHashtagsInput(data.hashtags.join(', '));
+        nextMeta.hashtags = data.hashtags;
+      }
+      // 홍보문 생성 이력이 없는 첫 편집인 경우 자동으로 홍보문도 생성
+      if (onAutoPromo) {
+        onAutoPromo(nextMeta);
+        return; // EditModal은 onAutoPromo 내부에서 닫힘
       }
     } catch (err) {
       setAiError(err?.message || 'AI 자동채우기 중 오류가 발생했습니다.');
@@ -3102,7 +3125,7 @@ class ModalErrorBoundary extends React.Component {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, savedPromo, onUpdatePromo }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, savedPromo, onUpdatePromo, autoGenerate }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
   const [aiLoading, setAiLoading] = useState(false);
@@ -3110,6 +3133,7 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
   const [currentModel, setCurrentModel] = useState(null); // AI 호출 중인 모델명
   const [githubReadme, setGithubReadme] = useState(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
+  const autoGenerateCalledRef = useRef(false); // StrictMode 이중 호출 방지
 
   // Unified editable content: driven by App-level promoData (Gist-synced)
   // savedPromo.content 가 plain object 인지 방어적으로 확인 (이전 버전 데이터 호환)
@@ -3132,6 +3156,14 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
     }).catch(() => { if (!cancelled) setReadmeLoading(false); });
     return () => { cancelled = true; };
   }, [repo.full_name, token]);
+
+  // EditModal AI 자동채우기 이후 처음 열리는 경우 홍보문 자동 생성
+  // autoGenerateCalledRef로 StrictMode 이중 호출·중복 실행 방지
+  useEffect(() => {
+    if (!autoGenerate || !geminiApiKey || aiGeneratedAt || autoGenerateCalledRef.current) return;
+    autoGenerateCalledRef.current = true;
+    handleAIGenerate(); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tabs = [
     { id: 'oneLiner', label: t(lang, 'promoOneLiner'), content: promo.oneLiner, ext: 'txt', mime: 'text/plain' },
@@ -3217,7 +3249,7 @@ sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
 youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
 training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
 readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)
-portfolioDescription: 포트폴리오 카드에 들어갈 자연스러운 한국어 홍보 설명문 (1~2문장, ${tone} 톤, 교육적 가치 강조)`;
+portfolioDescription: 포트폴리오 카드 설명문. 홍보성·감성적 표현 없이 앱의 핵심 기능과 목적만을 사실적으로 서술. 20~60자. 형식 예시(참고만, 그대로 쓰지 말 것): "구글 스프레드시트 연동형 통합 학급 경영 및 기록 관리 플랫폼", "이미지에서 대표 색상을 추출하고 색상 카드 및 포스터를 제작하는 다국어 웹 앱", "PDF 활동지를 불러와 판서·주석 후 JPG/PDF로 저장·공유·제출까지 연결하는 웹 기반 학습 도구", "학생 주도적인 학급회의 진행을 돕는 단계별 시나리오 및 회의 기록 플랫폼", "손 제스처 인식 기반 드로잉 도구"`;
 
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true, onModelChange: setCurrentModel });
       setCurrentModel(null);
