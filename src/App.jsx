@@ -673,13 +673,14 @@ async function apiPullGist(token, gistId) {
    Gemini AI API (free tier)
 ============================================================ */
 
-// 무료 Flash 모델 폴백 순서 — 429(한도 초과) 시 다음 모델로 자동 전환
-// gemini-2.5-flash: 무료 ~20 RPD / gemini-2.0-flash: 무료 1500 RPD / gemini-1.5-flash: 무료 1500 RPD / gemini-1.5-flash-8b: 무료 1500 RPD
+// 무료 티어 텍스트 모델 — 순서대로 fallback (유료 모델 절대 호출 안 함)
+// 429(한도 초과) · 404(모델 없음) · 503(일시 불가) 발생 시 다음 모델로 자동 전환
 const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
+  'gemini-3.1-flash-lite',  // 1순위: 최신 경량 무료
+  'gemini-2.5-flash',       // 2순위
+  'gemini-2.5-flash-lite',  // 3순위
+  'gemini-2.0-flash',       // 4순위
+  'gemini-2.0-flash-lite',  // 5순위
 ];
 
 async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
@@ -713,8 +714,8 @@ async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
         // Bad request / invalid key — no point trying other models
         throw new Error('API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.');
       }
-      if (res.status === 429) {
-        // Rate limit — try next model in the list
+      if (res.status === 429 || res.status === 404 || res.status === 503) {
+        // 429: 한도 초과 / 404: 모델 없음 / 503: 일시 불가 → 다음 모델로 전환
         lastError = new Error(errMsg);
         continue;
       }
@@ -843,12 +844,15 @@ const cleanLines = (lines) => lines.filter((l) => l != null && l !== false).join
 
 const dedupeJoin = (arr) => Array.from(new Set(arr.filter(Boolean))).join(' ');
 
+// buildPromo 및 handleAIGenerate 에서 공유하는 JS 문자열 이스케이프 함수
+const escStr = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+
 function buildPromo(repo, meta) {
   const title = (meta.appTitleKr || repo.name || '').trim();
   const titleEn = (meta.appTitleEn || repo.name || '').trim();
   const shortDesc = (meta.shortDescription || repo.description || '교육 활동에 활용할 수 있는 웹앱입니다.').trim();
   const longDesc = (meta.longDescription || meta.shortDescription || repo.description || '').trim() || shortDesc;
-  const features = (meta.features || []).filter(Boolean);
+  const features = Array.isArray(meta.features) ? meta.features.filter(Boolean) : [];
   const targetUsers = (meta.targetUsers || '학생과 교사').trim();
   const useCase = (meta.useCase || '수업 및 연수 활동').trim();
   const category = (meta.category || '').trim();
@@ -856,7 +860,7 @@ function buildPromo(repo, meta) {
   const tone = meta.promotionTone || '친근함';
   const url = getDeploymentUrl(repo, meta).url;
   const githubUrl = repo.html_url || '';
-  const hashtagsRaw = (meta.hashtags || []).filter(Boolean);
+  const hashtagsRaw = Array.isArray(meta.hashtags) ? meta.hashtags.filter(Boolean) : [];
   const hashtags = hashtagsRaw.map((h) => (h.startsWith('#') ? h : `#${h}`));
   const catTag = category ? `#${category.replace(/[·\s]/g, '')}` : '';
   const allTags = dedupeJoin([...hashtags, catTag, '#칫허브', '#Chithub']);
@@ -962,16 +966,15 @@ function buildPromo(repo, meta) {
   ]);
 
   /* === 5) Portfolio JS object (custom format) === */
-  const esc = (s) => (s || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
   const portfolioTagStr = hashtags.join(' '); // keep # prefix as-is
   const portfolio = `{
   id: '',
-  category: '${esc(category)}',
-  title: '${esc(title)}',
-  engTitle: '${esc(titleEn)}',
-  description: '${esc(longDesc || shortDesc)}',
-  tags: '${esc(portfolioTagStr)}',
-  imageUrl: '${esc(meta.thumbnailUrl || '')}',
+  category: '${escStr(category)}',
+  title: '${escStr(title)}',
+  engTitle: '${escStr(titleEn)}',
+  description: '${escStr(longDesc || shortDesc)}',
+  tags: '${escStr(portfolioTagStr)}',
+  imageUrl: '${escStr(meta.thumbnailUrl || '')}',
 },`;
 
   /* === 6) README (with badges + sections) === */
@@ -1092,6 +1095,7 @@ export default function App() {
   const [readmeViewRepo, setReadmeViewRepo] = useState(null); // fullName whose README to show
   const [promoData, setPromoData] = useState(() => readJSON('chithubPromoData', {}));
   const promoDataRef = useRef(promoData);
+  const readmeCacheRef = useRef({});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
@@ -1168,6 +1172,11 @@ export default function App() {
     writeJSON('chithubPromoData', promoData);
   }, [promoData]);
 
+  // readmeCache ref 동기화 (배경 fetch 루프에서 stale closure 방지)
+  useEffect(() => {
+    readmeCacheRef.current = readmeCache;
+  }, [readmeCache]);
+
   const handleUpdatePromo = useCallback((fullName, data) => {
     setPromoData((prev) => ({ ...prev, [fullName]: data }));
   }, []);
@@ -1198,6 +1207,8 @@ export default function App() {
     const fetchQueue = async () => {
       for (const repo of unchecked) {
         if (cancelled) break;
+        // 루프 중 다른 경로로 이미 캐시됐으면 건너뜀
+        if (readmeCacheRef.current[repo.full_name] !== undefined) continue;
         try {
           const md = await fetchGithubReadme(repo.full_name, effectiveToken);
           if (!cancelled) setReadmeCache((prev) => ({ ...prev, [repo.full_name]: md }));
@@ -3099,14 +3110,16 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
       const titleEn = (meta.appTitleEn || repo.name || '').trim();
       const shortDesc = (meta.shortDescription || repo.description || '교육 활동에 활용할 수 있는 웹앱').trim();
       const longDesc = (meta.longDescription || shortDesc).trim();
-      const features = (meta.features || []).filter(Boolean);
+      const features = Array.isArray(meta.features) ? meta.features.filter(Boolean) : [];
       const targetUsers = (meta.targetUsers || '학생과 교사').trim();
       const useCase = (meta.useCase || '수업 및 연수 활동').trim();
       const category = (meta.category || '에듀테크').trim();
       const tone = meta.promotionTone || '친근함';
       const url = getDeploymentUrl(repo, meta).url;
       const githubUrl = repo.html_url || '';
-      const hashtags = (meta.hashtags || []).map((h) => (h.startsWith('#') ? h : `#${h}`));
+      const hashtags = Array.isArray(meta.hashtags)
+        ? meta.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`))
+        : [];
 
       const readmeSection = githubReadme
         ? `\n[GitHub README (실제 프로젝트 설명 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
@@ -3135,20 +3148,17 @@ sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
 youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
 training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
 readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)
-json: 포트폴리오 JS 오브젝트 문자열 — 반드시 아래 양식을 그대로 따르고 작은따옴표 사용, description은 자연스러운 한국어 홍보 문장으로 작성:
-{
-  id: '',
-  category: '${category}',
-  title: '${title.replace(/'/g, "\\'")}',
-  engTitle: '${titleEn.replace(/'/g, "\\'")}',
-  description: '(자연스러운 홍보 설명 1~2문장, ${tone} 톤)',
-  tags: '${portfolioTagsStr}',
-  imageUrl: '${meta.thumbnailUrl || ''}',
-},`;
+portfolioDescription: 포트폴리오 카드에 들어갈 자연스러운 한국어 홍보 설명문 (1~2문장, ${tone} 톤, 교육적 가치 강조)`;
 
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true });
       const data = extractJson(text);
       const now = new Date().toISOString();
+
+      // 포트폴리오 JSON: AI가 생성한 description을 템플릿에 대입해 JS 오브젝트 문자열 구성
+      const aiPortfolio = data.portfolioDescription
+        ? `{\n  id: '',\n  category: '${escStr(category)}',\n  title: '${escStr(title)}',\n  engTitle: '${escStr(titleEn)}',\n  description: '${escStr(data.portfolioDescription)}',\n  tags: '${escStr(portfolioTagsStr)}',\n  imageUrl: '${escStr(meta.thumbnailUrl || '')}',\n},`
+        : null;
+
       setContent(prev => ({
         ...prev,
         oneLiner: data.oneLiner || prev.oneLiner || '',
@@ -3156,7 +3166,7 @@ json: 포트폴리오 JS 오브젝트 문자열 — 반드시 아래 양식을 �
         youtube: data.youtube || prev.youtube || '',
         training: data.training || prev.training || '',
         readme: data.readme || prev.readme || '',
-        json: data.json || prev.json || '',
+        ...(aiPortfolio ? { json: aiPortfolio } : {}),
       }));
       setAiGeneratedAt(now);
     } catch (err) {
