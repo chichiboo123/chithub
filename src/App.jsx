@@ -572,7 +572,10 @@ async function fetchGithubReadme(fullName, token) {
   if (!res.ok) return null;
   const data = await res.json();
   if (data.encoding === 'base64' && data.content) {
-    return atob(data.content.replace(/\n/g, ''));
+    // atob() produces a Latin-1 binary string; decode as UTF-8 to handle Korean and other multi-byte chars
+    const binaryStr = atob(data.content.replace(/\n/g, ''));
+    const bytes = Uint8Array.from(binaryStr, (c) => c.charCodeAt(0));
+    return new TextDecoder('utf-8').decode(bytes);
   }
   return null;
 }
@@ -671,7 +674,13 @@ async function apiPullGist(token, gistId) {
 ============================================================ */
 
 // 무료 Flash 모델 — 업데이트 시 이 한 줄만 수정
-const GEMINI_MODEL = 'gemini-2.5-flash';
+// Fallback order: try each model sequentially on 429 (rate limit exceeded)
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-3-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.0-flash',
+];
 
 async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
   const generationConfig = {
@@ -679,34 +688,54 @@ async function callGemini(apiKey, prompt, { jsonMode = false } = {}) {
     maxOutputTokens: 8192,
     ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
   };
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig,
-      }),
+
+  let lastError = null;
+  for (const model of GEMINI_MODELS) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig,
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      let errMsg = `Gemini API 오류 (HTTP ${res.status}, 모델: ${model})`;
+      try {
+        const errData = await res.json();
+        if (errData?.error?.message) errMsg = errData.error.message;
+      } catch { /* ignore */ }
+      if (res.status === 400) {
+        // Bad request / invalid key — no point trying other models
+        throw new Error('API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.');
+      }
+      if (res.status === 429) {
+        // Rate limit — try next model in the list
+        lastError = new Error(errMsg);
+        continue;
+      }
+      throw new Error(errMsg);
     }
-  );
-  if (!res.ok) {
-    let errMsg = `Gemini API 오류 (HTTP ${res.status})`;
-    try {
-      const errData = await res.json();
-      if (errData?.error?.message) errMsg = errData.error.message;
-    } catch { /* ignore */ }
-    if (res.status === 400) errMsg = 'API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.';
-    if (res.status === 429) errMsg = 'Gemini 무료 한도에 도달했습니다. 잠시 후 다시 시도해주세요.';
-    throw new Error(errMsg);
+
+    const data = await res.json();
+    // Filter out thinking parts (thought: true) from Gemini 2.5 Flash
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim()
+      || parts.map((p) => p.text || '').join('').trim();
+    if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
+    return text;
   }
-  const data = await res.json();
-  // Filter out thinking parts (thought: true) from Gemini 2.5 Flash
-  const parts = data.candidates?.[0]?.content?.parts || [];
-  const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim()
-    || parts.map((p) => p.text || '').join('').trim();
-  if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
-  return text;
+
+  // All models exhausted
+  throw new Error(
+    lastError?.message
+      ? `모든 Gemini 무료 모델의 일일 한도에 도달했습니다. 내일 다시 시도해주세요. (마지막 오류: ${lastError.message})`
+      : '모든 Gemini 무료 모델 호출에 실패했습니다. 잠시 후 다시 시도해주세요.'
+  );
 }
 
 function extractJson(text) {
