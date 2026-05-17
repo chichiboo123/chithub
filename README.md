@@ -2,8 +2,6 @@
 
 GitHub 리포지토리를 불러와 정리하고, 홍보 자료를 자동으로 생성하는 개인용 대시보드입니다.
 
-🌐 **라이브 데모**: [chithub.chichiboo.link](https://chithub.chichiboo.link)
-
 ---
 
 ## 주요 기능
