@@ -676,16 +676,16 @@ async function apiPullGist(token, gistId) {
 // 무료 티어 텍스트 모델 — 순서대로 fallback (유료 모델 절대 호출 안 함)
 // 429(한도 초과) · 404(모델 없음) · 503(일시 불가) 발생 시 다음 모델로 자동 전환
 const GEMINI_MODELS = [
-  'gemini-3.1-flash-lite',  // 1순위: 최신 경량 무료
-  'gemini-2.5-flash',       // 2순위
-  'gemini-2.5-flash-lite',  // 3순위
-  'gemini-2.0-flash',       // 4순위
-  'gemini-2.0-flash-lite',  // 5순위
+  'gemini-2.5-flash',       // 1순위: 최신 고성능 무료
+  'gemini-2.0-flash',       // 2순위
+  'gemini-2.0-flash-lite',  // 3순위
+  'gemini-1.5-flash',       // 4순위
+  'gemini-1.5-flash-8b',    // 5순위: 최후 폴백
 ];
 
 async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = null } = {}) {
   const generationConfig = {
-    temperature: 0.7,
+    temperature: 1.0,
     maxOutputTokens: 8192,
     ...(jsonMode ? { responseMimeType: 'application/json' } : {}),
   };
@@ -712,11 +712,16 @@ async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = nu
         if (errData?.error?.message) errMsg = errData.error.message;
       } catch { /* ignore */ }
       if (res.status === 400) {
-        // Bad request / invalid key — no point trying other models
-        throw new Error('API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.');
+        // 실제 API 키 오류(key not valid 등)만 즉시 종료, 모델별 파라미터 오류는 다음 모델로 전환
+        const lower = errMsg.toLowerCase();
+        if (lower.includes('api key') || lower.includes('api_key') || lower.includes('invalid key') || lower.includes('key not valid')) {
+          throw new Error('API 키가 올바르지 않습니다. 설정에서 Gemini API 키를 확인해주세요.');
+        }
+        lastError = new Error(errMsg);
+        continue;
       }
-      if (res.status === 429 || res.status === 404 || res.status === 503) {
-        // 429: 한도 초과 / 404: 모델 없음 / 503: 일시 불가 → 다음 모델로 전환
+      if (res.status === 429 || res.status === 404 || res.status === 500 || res.status === 503) {
+        // 429: 한도 초과 / 404: 모델 없음 / 500·503: 서버 오류 → 다음 모델로 전환
         lastError = new Error(errMsg);
         continue;
       }
