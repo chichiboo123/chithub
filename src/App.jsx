@@ -3417,22 +3417,133 @@ portfolioDescription: 포트폴리오 카드 설명문. 홍보성·감성적 표
 ============================================================ */
 
 function ReadmeModal({ fullName, content, onClose }) {
-  const lines = content.split('\n');
+  const [copied, setCopied] = useState(false);
+
+  function renderInline(text) {
+    const tokens = [];
+    const regex = /(\*\*(.+?)\*\*|\*([^*]+?)\*|`([^`]+)`|\[([^\]]+)\]\(([^)]+)\))/g;
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+    while ((match = regex.exec(text)) !== null) {
+      if (match.index > lastIndex) tokens.push(<span key={key++}>{text.slice(lastIndex, match.index)}</span>);
+      if (match[2]) tokens.push(<strong key={key++} className="font-bold text-slate-900">{match[2]}</strong>);
+      else if (match[3]) tokens.push(<em key={key++} className="italic">{match[3]}</em>);
+      else if (match[4]) tokens.push(<code key={key++} className="bg-slate-100 text-rose-600 px-1 rounded text-xs font-mono">{match[4]}</code>);
+      else if (match[5]) tokens.push(<a key={key++} href={match[6]} target="_blank" rel="noopener noreferrer" className="text-blue-600 underline hover:text-blue-800">{match[5]}</a>);
+      lastIndex = regex.lastIndex;
+    }
+    if (lastIndex < text.length) tokens.push(<span key={key++}>{text.slice(lastIndex)}</span>);
+    return tokens.length > 0 ? tokens : text;
+  }
+
+  function renderContent() {
+    const lines = content.split('\n');
+    const result = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^```/.test(line)) {
+        const lang = line.replace(/^```/, '').trim();
+        const codeLines = [];
+        i++;
+        while (i < lines.length && !/^```/.test(lines[i])) { codeLines.push(lines[i]); i++; }
+        result.push(
+          <div key={i} className="my-3 rounded-lg bg-slate-800 overflow-x-auto">
+            {lang && <div className="text-xs text-slate-400 px-3 pt-2 font-mono border-b border-slate-700 pb-1">{lang}</div>}
+            <pre className="text-xs text-green-300 font-mono p-3 overflow-x-auto leading-relaxed">{codeLines.join('\n')}</pre>
+          </div>
+        );
+        i++;
+        continue;
+      }
+      const headMatch = line.match(/^(#{1,6}) (.+)/);
+      if (headMatch) {
+        const lvl = headMatch[1].length;
+        const cls = ['text-2xl font-bold text-slate-900 mt-4 mb-2 pb-1 border-b border-slate-200',
+          'text-xl font-bold text-slate-800 mt-4 mb-2 pb-1 border-b border-slate-200',
+          'text-lg font-semibold text-slate-700 mt-3 mb-1',
+          'text-base font-semibold text-slate-700 mt-2 mb-1',
+          'text-sm font-semibold text-slate-600 mt-2 mb-1',
+          'text-xs font-semibold text-slate-600 mt-2 mb-1'][lvl - 1];
+        result.push(<div key={i} className={cls}>{renderInline(headMatch[2])}</div>);
+        i++; continue;
+      }
+      if (/^[-*+] /.test(line)) {
+        result.push(<div key={i} className="flex gap-2 text-slate-700 leading-relaxed py-0.5"><span className="shrink-0 mt-0.5 text-slate-400">•</span><span>{renderInline(line.replace(/^[-*+] /, ''))}</span></div>);
+        i++; continue;
+      }
+      if (/^\d+\. /.test(line)) {
+        const num = line.match(/^(\d+)\./)[1];
+        result.push(<div key={i} className="flex gap-2 text-slate-700 leading-relaxed py-0.5"><span className="shrink-0 text-slate-400 w-5 text-right">{num}.</span><span>{renderInline(line.replace(/^\d+\. /, ''))}</span></div>);
+        i++; continue;
+      }
+      if (/^> /.test(line)) {
+        result.push(<div key={i} className="border-l-4 border-slate-300 pl-3 text-slate-500 italic my-1">{renderInline(line.replace(/^> /, ''))}</div>);
+        i++; continue;
+      }
+      if (/^(-{3,}|\*{3,})$/.test(line.trim())) {
+        result.push(<hr key={i} className="border-slate-200 my-3" />);
+        i++; continue;
+      }
+      if (/^\|/.test(line)) {
+        const cells = line.split('|').slice(1, -1);
+        const isSep = cells.every(c => /^[-: ]+$/.test(c));
+        if (!isSep) result.push(
+          <div key={i} className="flex border-b border-slate-200">
+            {cells.map((cell, ci) => <div key={ci} className="flex-1 px-2 py-1 text-sm text-slate-700 border-r border-slate-200 last:border-r-0">{renderInline(cell.trim())}</div>)}
+          </div>
+        );
+        i++; continue;
+      }
+      if (line === '') { result.push(<div key={i} className="h-2" />); i++; continue; }
+      result.push(<div key={i} className="text-slate-700 leading-relaxed">{renderInline(line)}</div>);
+      i++;
+    }
+    return result;
+  }
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${fullName.replace('/', '-')}-README.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <Modal title={`README · ${fullName}`} onClose={onClose} wide>
-      <div className="font-mono text-xs leading-relaxed whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-4 max-h-[60vh] overflow-y-auto">
-        {lines.map((line, i) => {
-          if (/^# /.test(line)) return <div key={i} className="text-xl font-bold text-slate-900 mt-1 mb-1">{line.replace(/^# /, '')}</div>;
-          if (/^## /.test(line)) return <div key={i} className="text-base font-bold text-slate-800 mt-3 mb-1 border-b border-slate-200 pb-0.5">{line.replace(/^## /, '')}</div>;
-          if (/^### /.test(line)) return <div key={i} className="text-sm font-semibold text-slate-700 mt-2 mb-0.5">{line.replace(/^### /, '')}</div>;
-          if (/^- /.test(line) || /^\* /.test(line)) return <div key={i} className="text-slate-600 pl-3">• {line.replace(/^[-*] /, '')}</div>;
-          if (/^\d+\. /.test(line)) return <div key={i} className="text-slate-600 pl-3">{line}</div>;
-          if (line.startsWith('```') || line.startsWith('---')) return <div key={i} className="border-t border-slate-200 my-1" />;
-          if (line === '') return <div key={i} className="h-2" />;
-          return <div key={i} className="text-slate-700">{line}</div>;
-        })}
+      <div className="bg-white border border-slate-200 rounded-lg p-5 max-h-[60vh] overflow-y-auto">
+        {renderContent()}
       </div>
-      <p className="text-xs text-slate-400 mt-2">GitHub에서 불러온 원본 README입니다. 마크다운 원문 그대로 표시됩니다.</p>
+      <div className="flex items-center justify-between mt-3">
+        <p className="text-xs text-slate-400">GitHub에서 불러온 원본 README입니다.</p>
+        <div className="flex gap-2">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            {copied ? <CheckCircle2 className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
+            {copied ? '복사됨' : '클립보드 복사'}
+          </button>
+          <button
+            onClick={handleDownload}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            TXT 다운로드
+          </button>
+        </div>
+      </div>
     </Modal>
   );
 }
