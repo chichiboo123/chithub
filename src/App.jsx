@@ -1861,7 +1861,7 @@ export default function App() {
 
         {/* Filters / view controls */}
         {repos.length > 0 && (
-          <section className="card p-3 sm:p-4 sticky top-0 z-20 bg-white/95 backdrop-blur-sm shadow-sm">
+          <section className="card p-3 sm:p-4 sm:sticky sm:top-0 sm:z-20 sm:bg-white/95 sm:backdrop-blur-sm shadow-sm">
             {/* 1행: 검색 + 보기 모드 + 결과 수 */}
             <div className="flex flex-col sm:flex-row sm:items-center gap-2">
               <div className="relative flex-1 min-w-0">
