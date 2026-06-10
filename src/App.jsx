@@ -24,7 +24,6 @@ import {
   ShieldCheck,
   Info,
   AlertTriangle,
-  Plus,
   CheckCircle2,
   Loader2,
   Star,
@@ -32,7 +31,6 @@ import {
   CircleAlert,
   Lock,
   Archive,
-  Languages,
   Cloud,
   CloudUpload,
   CloudDownload,
@@ -52,6 +50,8 @@ const STORAGE_KEYS = {
   settings: 'chithubSettings',
   repoMeta: 'chithubRepoMeta',
   repos: 'chithubRepos',
+  syncedAt: 'chithubSyncedAt',
+  readme: 'chithubReadmeCache',
 };
 
 const STATUS_OPTIONS = [
@@ -150,8 +150,6 @@ const I18N = {
     onboard2Desc: '앱 이름, 설명, 카테고리, 상태, 해시태그까지 한 곳에서 관리합니다.',
     onboard3Title: '홍보자료 생성하기',
     onboard3Desc: '한 줄 소개부터 SNS·유튜브 설명·README 초안까지 자동으로 만들 수 있습니다.',
-    collapseOnboard: '안내 접기',
-    expandOnboard: '안내 펼치기',
     promoH1: '홍보 자료 생성',
     promoOneLiner: '한 줄 소개',
     promoSns: 'SNS 게시글',
@@ -242,8 +240,6 @@ const I18N = {
     onboard2Desc: 'Manage names, descriptions, categories, status and hashtags in one place.',
     onboard3Title: 'Generate promo materials',
     onboard3Desc: 'One-liners, social posts, YouTube descriptions and README drafts — automatically.',
-    collapseOnboard: 'Hide tips',
-    expandOnboard: 'Show tips',
     promoH1: 'Promo materials',
     promoOneLiner: 'One-liner',
     promoSns: 'Social post',
@@ -331,8 +327,6 @@ const I18N = {
     onboard2Desc: '名前・説明・カテゴリ・ステータス・ハッシュタグを一括管理。',
     onboard3Title: '宣伝資料を生成',
     onboard3Desc: 'ワンライナーからSNS・YouTube・READMEドラフトまで自動生成。',
-    collapseOnboard: '案内を畳む',
-    expandOnboard: '案内を表示',
     promoH1: '宣伝資料の生成',
     promoOneLiner: 'ワンライナー',
     promoSns: 'SNS投稿',
@@ -683,6 +677,10 @@ const GEMINI_MODELS = [
   'gemini-2.0-flash-lite',  // 5순위
 ];
 
+// 세션 내에서 마지막으로 성공한 모델 인덱스를 기억해,
+// 한도 초과된 상위 모델에 매번 헛 요청을 보내지 않도록 함
+let geminiStartIndex = 0;
+
 async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = null } = {}) {
   const generationConfig = {
     temperature: 0.7,
@@ -691,7 +689,8 @@ async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = nu
   };
 
   let lastError = null;
-  for (const model of GEMINI_MODELS) {
+  for (let mi = geminiStartIndex; mi < GEMINI_MODELS.length; mi++) {
+    const model = GEMINI_MODELS[mi];
     if (onModelChange) onModelChange(model); // 현재 시도 중인 모델 알림
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -729,10 +728,12 @@ async function callGemini(apiKey, prompt, { jsonMode = false, onModelChange = nu
     const text = parts.filter((p) => !p.thought).map((p) => p.text || '').join('').trim()
       || parts.map((p) => p.text || '').join('').trim();
     if (!text) throw new Error('AI 응답이 비어 있습니다. 다시 시도해주세요.');
+    geminiStartIndex = mi; // 다음 호출은 이 모델부터 바로 시도
     return text;
   }
 
   // All models exhausted
+  geminiStartIndex = 0; // 다음 호출에서 처음부터 다시 시도
   throw new Error(
     lastError?.message
       ? `모든 Gemini 무료 모델의 일일 한도에 도달했습니다. 내일 다시 시도해주세요. (마지막 오류: ${lastError.message})`
@@ -1076,7 +1077,8 @@ export default function App() {
 
   const [repos, setRepos] = useState(() => readJSON(STORAGE_KEYS.repos, []));
   const [loadingRepos, setLoadingRepos] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState(() => readJSON(STORAGE_KEYS.syncedAt, ''));
   const [commitsByRepo, setCommitsByRepo] = useState({});
   const [loadingCommitsFor, setLoadingCommitsFor] = useState('');
 
@@ -1086,21 +1088,25 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState('');
   const [filterLanguage, setFilterLanguage] = useState('');
   const [filterVisibility, setFilterVisibility] = useState('');
+  const [filterIncomplete, setFilterIncomplete] = useState(false); // 상태/카테고리 미입력만 보기
   const [sortBy, setSortBy] = useState('updated');
   const [viewMode, setViewMode] = useState('card');
-  const [onboardCollapsed, setOnboardCollapsed] = useState(true);
-  const [connectCollapsed, setConnectCollapsed] = useState(false);
+  // 이미 불러온 리포가 있으면 연결 패널은 접힌 상태로 시작
+  const [connectCollapsed, setConnectCollapsed] = useState(() => readJSON(STORAGE_KEYS.repos, []).length > 0);
 
   const [editingRepo, setEditingRepo] = useState(null); // full_name
   const [promoRepo, setPromoRepo] = useState(null); // full_name
-  const [promoAutoGenerate, setPromoAutoGenerate] = useState(false); // AI 자동채우기 후 홍보문 자동생성 트리거
   const [helpOpen, setHelpOpen] = useState(false);
-  const [readmeCache, setReadmeCache] = useState({}); // { [fullName]: null | string }
+  // README 영속 캐시: { [fullName]: { md: string|null, pushedAt: string } }
+  // pushedAt이 리포의 pushed_at과 같으면 재방문 시 다시 받지 않음
+  const [readmeCache, setReadmeCache] = useState(() => {
+    const saved = readJSON(STORAGE_KEYS.readme, {});
+    return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+  });
   const [readmeViewRepo, setReadmeViewRepo] = useState(null); // fullName whose README to show
   const [promoData, setPromoData] = useState(() => readJSON('chithubPromoData', {}));
   const promoDataRef = useRef(promoData);
   const readmeCacheRef = useRef({});
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [showSettingsPanel, setShowSettingsPanel] = useState(false);
 
   const [gistSyncing, setGistSyncing] = useState(false);
@@ -1170,15 +1176,27 @@ export default function App() {
     writeJSON(STORAGE_KEYS.repos, repos);
   }, [repos]);
 
+  /* --- persist last synced time --- */
+  useEffect(() => {
+    writeJSON(STORAGE_KEYS.syncedAt, lastSyncedAt);
+  }, [lastSyncedAt]);
+
   /* --- persist promoData --- */
   useEffect(() => {
     promoDataRef.current = promoData;
     writeJSON('chithubPromoData', promoData);
   }, [promoData]);
 
-  // readmeCache ref 동기화 (배경 fetch 루프에서 stale closure 방지)
+  // readmeCache ref 동기화 (배경 fetch 루프에서 stale closure 방지) + 영속화
   useEffect(() => {
     readmeCacheRef.current = readmeCache;
+    writeJSON(STORAGE_KEYS.readme, readmeCache);
+  }, [readmeCache]);
+
+  // README 캐시 조회: 항목 없으면 undefined(미확인), 있으면 md(string|null)
+  const readmeOf = useCallback((fullName) => {
+    const entry = readmeCache[fullName];
+    return entry ? entry.md : undefined;
   }, [readmeCache]);
 
   const handleUpdatePromo = useCallback((fullName, data) => {
@@ -1191,7 +1209,7 @@ export default function App() {
     return () => clearTimeout(t);
   }, [searchTerm]);
 
-  const hasActiveFilters = filterCategory || filterStatus || filterLanguage || filterVisibility || debouncedSearchTerm;
+  const hasActiveFilters = filterCategory || filterStatus || filterLanguage || filterVisibility || filterIncomplete || debouncedSearchTerm;
   const handleClearFilters = useCallback(() => {
     setSearchTerm('');
     setDebouncedSearchTerm('');
@@ -1199,25 +1217,42 @@ export default function App() {
     setFilterStatus('');
     setFilterLanguage('');
     setFilterVisibility('');
+    setFilterIncomplete(false);
   }, []);
 
-  /* --- README 백그라운드 사전 로딩 (repos 변경 시 자동 실행) --- */
+  /* --- README 백그라운드 사전 로딩 ---
+     영속 캐시에 없거나, 리포에 새 push가 있어 캐시가 낡은 것만 받아온다.
+     (재방문 시 변경 없는 리포는 API 호출 0회) */
   useEffect(() => {
     if (!repos.length) return;
     let cancelled = false;
-    const unchecked = repos.filter((r) => readmeCache[r.full_name] === undefined);
-    if (!unchecked.length) return;
+    const isStale = (r) => {
+      const e = readmeCacheRef.current[r.full_name];
+      return !e || e.pushedAt !== (r.pushed_at || '');
+    };
+    const stale = repos.filter(isStale);
+    if (!stale.length) return;
 
     const fetchQueue = async () => {
-      for (const repo of unchecked) {
+      for (const repo of stale) {
         if (cancelled) break;
         // 루프 중 다른 경로로 이미 캐시됐으면 건너뜀
-        if (readmeCacheRef.current[repo.full_name] !== undefined) continue;
+        if (!isStale(repo)) continue;
         try {
           const md = await fetchGithubReadme(repo.full_name, effectiveToken);
-          if (!cancelled) setReadmeCache((prev) => ({ ...prev, [repo.full_name]: md }));
+          if (!cancelled) {
+            setReadmeCache((prev) => ({
+              ...prev,
+              [repo.full_name]: { md: md ? md.slice(0, 50000) : null, pushedAt: repo.pushed_at || '' },
+            }));
+          }
         } catch {
-          if (!cancelled) setReadmeCache((prev) => ({ ...prev, [repo.full_name]: null }));
+          if (!cancelled) {
+            setReadmeCache((prev) => ({
+              ...prev,
+              [repo.full_name]: { md: null, pushedAt: repo.pushed_at || '' },
+            }));
+          }
         }
         // 각 요청 사이 200ms 지연으로 API 속도 제한 준수
         if (!cancelled) await new Promise((r) => setTimeout(r, 200));
@@ -1230,20 +1265,22 @@ export default function App() {
 
   /* --- README fetch-and-cache --- */
   const handleViewReadme = useCallback(async (fullName) => {
-    if (readmeCache[fullName] !== undefined) {
-      if (readmeCache[fullName]) setReadmeViewRepo(fullName);
+    const cached = readmeOf(fullName);
+    if (cached !== undefined) {
+      if (cached) setReadmeViewRepo(fullName);
       else push('이 리포지토리에는 README가 없습니다.', 'info');
       return;
     }
     try {
       const md = await fetchGithubReadme(fullName, effectiveToken);
-      setReadmeCache((prev) => ({ ...prev, [fullName]: md }));
+      const pushedAt = repos.find((r) => r.full_name === fullName)?.pushed_at || '';
+      setReadmeCache((prev) => ({ ...prev, [fullName]: { md: md ? md.slice(0, 50000) : null, pushedAt } }));
       if (md) setReadmeViewRepo(fullName);
       else push('이 리포지토리에는 README가 없습니다.', 'info');
     } catch {
       push('README를 불러오는 중 오류가 발생했습니다.', 'error');
     }
-  }, [readmeCache, effectiveToken, push]);
+  }, [readmeOf, repos, effectiveToken, push]);
 
   /* --- ESC to close modals --- */
   useEffect(() => {
@@ -1273,7 +1310,6 @@ export default function App() {
       setLastSyncedAt(new Date().toISOString());
       setSettings((s) => ({ ...s, savedUsername: username }));
       push(`리포지토리 ${data.length}개를 불러왔습니다.`, 'success');
-      setOnboardCollapsed(true);
       setConnectCollapsed(true);
     } catch (err) {
       push(err?.message || friendlyApiError(0), 'error');
@@ -1305,7 +1341,6 @@ export default function App() {
         setSettings((s) => ({ ...s, saveToken: false, savedToken: '' }));
       }
       push(`리포지토리 ${data.length}개를 불러왔습니다.`, 'success');
-      setOnboardCollapsed(true);
       setConnectCollapsed(true);
     } catch (err) {
       push(err?.message || friendlyApiError(0), 'error');
@@ -1313,6 +1348,37 @@ export default function App() {
       setLoadingRepos(false);
     }
   };
+
+  /* --- 새로고침: 저장된 계정 정보로 리포 목록 재요청 (목록은 그대로 두고 백그라운드 갱신) --- */
+  const refreshRepos = useCallback(async ({ silent = false } = {}) => {
+    const token = tokenInput || (settings.saveToken ? settings.savedToken : '');
+    const username = (settings.savedUsername || usernameInput).trim();
+    if (!token && !username) {
+      if (!silent) push('GitHub Username 또는 토큰을 먼저 입력해주세요.', 'error');
+      return;
+    }
+    setRefreshing(true);
+    try {
+      const data = token ? await fetchMyRepos(token) : await fetchPublicRepos(username);
+      setRepos(Array.isArray(data) ? data : []);
+      setLastSyncedAt(new Date().toISOString());
+      if (!silent) push(`리포지토리 ${data.length}개를 새로 불러왔습니다.`, 'success');
+    } catch (err) {
+      if (!silent) push(err?.message || friendlyApiError(0), 'error');
+    } finally {
+      setRefreshing(false);
+    }
+  }, [tokenInput, usernameInput, settings.saveToken, settings.savedToken, settings.savedUsername, push]);
+
+  /* --- 앱을 열면 저장된 계정으로 자동 새로고침 (캐시된 목록은 즉시 표시, 갱신은 백그라운드) --- */
+  const autoRefreshDoneRef = useRef(false);
+  useEffect(() => {
+    if (autoRefreshDoneRef.current) return;
+    const token = settings.saveToken ? settings.savedToken : '';
+    if (!token && !settings.savedUsername) return;
+    autoRefreshDoneRef.current = true;
+    refreshRepos({ silent: true });
+  }, [settings.saveToken, settings.savedToken, settings.savedUsername, refreshRepos]);
 
   const handleDeleteSavedToken = () => {
     setTokenInput('');
@@ -1354,6 +1420,19 @@ export default function App() {
     }));
   };
 
+  /* 카드·표에서 모달 없이 상태만 바로 변경 */
+  const handleQuickStatus = useCallback((fullName, status) => {
+    setRepoMeta((prev) => ({
+      ...prev,
+      [fullName]: {
+        ...defaultRepoMeta(),
+        ...(prev[fullName] || {}),
+        status,
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+  }, []);
+
   /* --- filtering / sorting --- */
   const merged = useMemo(() => {
     return repos.map((repo) => ({
@@ -1386,6 +1465,7 @@ export default function App() {
       if (filterLanguage && repo.language !== filterLanguage) return false;
       if (filterVisibility === 'public' && repo.private) return false;
       if (filterVisibility === 'private' && !repo.private) return false;
+      if (filterIncomplete && meta.status && meta.category) return false;
       if (!term) return true;
       const hay = [
         repo.name,
@@ -1430,7 +1510,13 @@ export default function App() {
     });
 
     return arr;
-  }, [merged, debouncedSearchTerm, filterCategory, filterStatus, filterLanguage, filterVisibility, sortBy]);
+  }, [merged, debouncedSearchTerm, filterCategory, filterStatus, filterLanguage, filterVisibility, filterIncomplete, sortBy]);
+
+  /* 상태 또는 카테고리가 비어있는 리포 수 (관리 대상 한눈에 보기) */
+  const incompleteCount = useMemo(
+    () => merged.filter(({ meta }) => !meta.status || !meta.category).length,
+    [merged]
+  );
 
   /* --- summary counts --- */
   const summary = useMemo(() => {
@@ -1693,21 +1779,6 @@ export default function App() {
             </div>
           </div>
           <div className="ml-auto flex items-center gap-2 flex-wrap">
-            <div className="relative">
-              <label htmlFor="lang-select" className="sr-only">Language</label>
-              <select
-                id="lang-select"
-                value={lang}
-                onChange={(e) => setSettings((s) => ({ ...s, language: e.target.value }))}
-                className="input pl-8 py-1.5 text-sm w-auto"
-                aria-label="Language"
-              >
-                <option value="ko">한국어</option>
-                <option value="en">English</option>
-                <option value="ja">日本語</option>
-              </select>
-              <Languages className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-            </div>
             <button className="btn-ghost p-2" onClick={() => setHelpOpen(true)} aria-label={t(lang, 'help')} title={t(lang, 'help')}>
               <HelpCircle className="w-5 h-5" />
             </button>
@@ -1736,8 +1807,11 @@ export default function App() {
               )}
             </h2>
             <div className="flex items-center gap-3 shrink-0">
-              <span className="text-xs text-slate-400">
-                {lastSyncedAt ? formatDateTime(lastSyncedAt) : t(lang, 'notSynced')}
+              <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                {refreshing && <Loader2 className="w-3 h-3 animate-spin text-brand-500" />}
+                {refreshing
+                  ? '자동 새로고침 중…'
+                  : lastSyncedAt ? formatDateTime(lastSyncedAt) : t(lang, 'notSynced')}
               </span>
               <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${connectCollapsed ? '' : 'rotate-180'}`} />
             </div>
@@ -1888,6 +1962,15 @@ export default function App() {
                 <span className="text-xs text-slate-500 whitespace-nowrap hidden sm:inline">
                   <strong className="text-slate-700">{filtered.length}</strong>/{repos.length}
                 </span>
+                <button
+                  className="btn-secondary p-2"
+                  onClick={() => refreshRepos()}
+                  disabled={refreshing || loadingRepos}
+                  title="GitHub에서 리포지토리 목록 새로고침"
+                  aria-label="새로고침"
+                >
+                  <RefreshCcw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+                </button>
                 <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
                   <button
                     className={`btn flex-1 sm:flex-initial ${
@@ -1964,6 +2047,20 @@ export default function App() {
                   ))}
                 </select>
               </div>
+              {incompleteCount > 0 && (
+                <button
+                  className={`text-xs rounded-full border px-2.5 py-1.5 transition-colors ${
+                    filterIncomplete
+                      ? 'bg-amber-100 border-amber-300 text-amber-800 font-semibold'
+                      : 'bg-white border-slate-200 text-slate-500 hover:bg-amber-50 hover:text-amber-700'
+                  }`}
+                  onClick={() => setFilterIncomplete((v) => !v)}
+                  aria-pressed={filterIncomplete}
+                  title="상태 또는 카테고리가 비어있는 리포지토리만 보기"
+                >
+                  ⚠ 정리 필요 {incompleteCount}
+                </button>
+              )}
               {hasActiveFilters && (
                 <button
                   className="btn-ghost text-xs py-1.5 px-2.5 text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200"
@@ -2067,10 +2164,11 @@ export default function App() {
                   lang={lang}
                   onEdit={() => setEditingRepo(repo.full_name)}
                   onPromo={() => setPromoRepo(repo.full_name)}
+                  onQuickStatus={(status) => handleQuickStatus(repo.full_name, status)}
                   onLoadCommits={() => handleLoadCommits(repo.full_name)}
                   commits={commitsByRepo[repo.full_name]}
                   loadingCommits={loadingCommitsFor === repo.full_name}
-                  readmeStatus={readmeCache[repo.full_name]}
+                  readmeStatus={readmeOf(repo.full_name)}
                   onViewReadme={() => handleViewReadme(repo.full_name)}
                 />
               ))}
@@ -2115,11 +2213,18 @@ export default function App() {
                           </div>
                         </td>
                         <td className="px-3 py-3">
-                          {meta.status ? (
-                            <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
+                          <select
+                            value={meta.status || ''}
+                            onChange={(e) => handleQuickStatus(repo.full_name, e.target.value)}
+                            className={`text-xs rounded-full px-2 py-0.5 cursor-pointer focus:outline-none focus:ring-1 focus:ring-brand-300 ${statusBadgeClass(meta.status)}`}
+                            title="상태 빠른 변경"
+                            aria-label="상태 빠른 변경"
+                          >
+                            <option value="">상태 없음</option>
+                            {STATUS_OPTIONS.map((s) => (
+                              <option key={s} value={s}>{s}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="px-3 py-3">
                           {meta.category ? (
@@ -2165,7 +2270,7 @@ export default function App() {
                         </td>
                         <td className="px-3 py-3 text-center">
                           {(() => {
-                            const rs = readmeCache[repo.full_name];
+                            const rs = readmeOf(repo.full_name);
                             if (rs === null) return <span className="text-slate-300 text-xs">—</span>;
                             return (
                               <button
@@ -2283,15 +2388,20 @@ export default function App() {
           }}
           geminiApiKey={settings.geminiApiKey}
           token={effectiveToken}
+          readme={readmeOf(editingRepo)}
           onAutoPromo={
-            // 기존 홍보문(AI 생성 이력)이 없을 때만 자동생성 콜백 전달
+            // 기존 홍보문(AI 생성 이력)이 없을 때만: 메타데이터+홍보문을 1회 호출로 생성
             !promoData[editingRepo]?.generatedAt
-              ? (patch) => {
+              ? (patch, promoContent) => {
                   updateMeta(editingRepo, { ...patch, lastCheckedAt: new Date().toISOString() });
+                  if (promoContent) {
+                    handleUpdatePromo(editingRepo, { content: promoContent, generatedAt: new Date().toISOString() });
+                    push('AI가 메타데이터와 홍보문을 한 번에 생성했습니다.', 'success');
+                  } else {
+                    push('메타데이터를 저장했습니다.', 'success');
+                  }
                   setEditingRepo(null);
-                  setPromoAutoGenerate(true);
                   setPromoRepo(editingRepo);
-                  push('메타데이터를 저장하고 홍보문을 자동 생성합니다.', 'success');
                 }
               : null
           }
@@ -2300,13 +2410,12 @@ export default function App() {
 
       {/* Promo modal */}
       {promoRepo && currentPromoRepo && (
-        <ModalErrorBoundary onClose={() => { setPromoRepo(null); setPromoAutoGenerate(false); }}>
+        <ModalErrorBoundary onClose={() => setPromoRepo(null)}>
           <PromoModal
             repo={currentPromoRepo}
             meta={currentPromoMeta}
             lang={lang}
-            autoGenerate={promoAutoGenerate}
-            onClose={() => { setPromoRepo(null); setPromoAutoGenerate(false); }}
+            onClose={() => setPromoRepo(null)}
             onCopy={async (text) => {
               const ok = await copyToClipboard(text);
               push(ok ? '클립보드에 복사했습니다.' : '복사에 실패했습니다.', ok ? 'success' : 'error');
@@ -2317,6 +2426,7 @@ export default function App() {
             }}
             geminiApiKey={settings.geminiApiKey}
             token={effectiveToken}
+            readme={readmeOf(promoRepo)}
             savedPromo={promoData[promoRepo] || null}
             onUpdatePromo={handleUpdatePromo}
           />
@@ -2324,10 +2434,10 @@ export default function App() {
       )}
 
       {/* README modal */}
-      {readmeViewRepo && readmeCache[readmeViewRepo] && (
+      {readmeViewRepo && readmeOf(readmeViewRepo) && (
         <ReadmeModal
           fullName={readmeViewRepo}
-          content={readmeCache[readmeViewRepo]}
+          content={readmeOf(readmeViewRepo)}
           onClose={() => setReadmeViewRepo(null)}
         />
       )}
@@ -2474,19 +2584,6 @@ function AdminPasswordModal({ onConfirm, onClose }) {
    Small components
 ============================================================ */
 
-function OnboardCard({ icon, title, desc, step }) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
-      <div className="flex items-center gap-2 text-brand-700 font-semibold text-sm">
-        <span className="w-7 h-7 rounded-md bg-brand-600 text-white grid place-items-center">{icon}</span>
-        <span className="text-xs text-slate-500">{step}</span>
-      </div>
-      <div className="mt-2 font-semibold text-slate-900">{title}</div>
-      <p className="text-sm text-slate-600 mt-1">{desc}</p>
-    </div>
-  );
-}
-
 function StatCard({ label, value, icon }) {
   return (
     <div className="card p-4">
@@ -2614,7 +2711,7 @@ function Modal({ title, onClose, children, footer, wide }) {
    RepoCard
 ============================================================ */
 
-function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme }) {
+function RepoCard({ repo, meta, lang, onEdit, onPromo, onQuickStatus, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme }) {
   const deploy = getDeploymentUrl(repo, meta);
 
   return (
@@ -2655,9 +2752,20 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
         <div className="text-xs text-slate-500 mt-0.5 break-words">{meta.appTitleEn}</div>
       )}
 
-      {/* 상태 / 카테고리 / 언어 배지 */}
+      {/* 상태(빠른 변경) / 카테고리 / 언어 배지 */}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        {meta.status && <span className={`badge ${statusBadgeClass(meta.status)}`}>{meta.status}</span>}
+        <select
+          value={meta.status || ''}
+          onChange={(e) => onQuickStatus(e.target.value)}
+          className={`text-xs rounded-full px-2 py-0.5 cursor-pointer focus:outline-none focus:ring-1 focus:ring-brand-300 ${statusBadgeClass(meta.status)}`}
+          title="상태 빠른 변경"
+          aria-label="상태 빠른 변경"
+        >
+          <option value="">상태 없음</option>
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
         {meta.category && (
           <span className="badge bg-brand-50 text-brand-700 border border-brand-200">{meta.category}</span>
         )}
@@ -2805,7 +2913,7 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onLoadCommits, commits, l
    EditModal
 ============================================================ */
 
-function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey, token, onAutoPromo }) {
+function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo, geminiApiKey, token, readme, onAutoPromo }) {
   const [form, setForm] = useState(() => ({
     ...defaultRepoMeta(),
     ...meta,
@@ -2817,15 +2925,20 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [currentModel, setCurrentModel] = useState(null);
-  const [githubReadme, setGithubReadme] = useState(null);
+  // App의 영속 캐시(readme prop)를 우선 사용 — 캐시에 아직 없을 때만 직접 fetch
+  const [githubReadme, setGithubReadme] = useState(readme !== undefined ? readme : null);
 
   useEffect(() => {
+    if (readme !== undefined) {
+      setGithubReadme(readme);
+      return;
+    }
     let cancelled = false;
     fetchGithubReadme(repo.full_name, token).then((md) => {
       if (!cancelled) setGithubReadme(md);
     }).catch(() => {});
     return () => { cancelled = true; };
-  }, [repo.full_name, token]);
+  }, [readme, repo.full_name, token]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -2854,6 +2967,22 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
         ? `\n[GitHub README (실제 앱 설명 — 최우선 참고)]\n${githubReadme.slice(0, 3000)}${githubReadme.length > 3000 ? '\n...(이하 생략)' : ''}`
         : '';
 
+      // 홍보문 이력이 없으면 메타데이터 + 홍보문을 한 번의 호출로 함께 생성 (API 호출 1회로 절약)
+      const wantPromo = !!onAutoPromo;
+      const deployUrl = getDeploymentUrl(repo, form).url;
+      const promoRules = wantPromo
+        ? `
+
+그리고 같은 JSON 객체에, 위에서 추론한 메타데이터와 일관된 한국어 홍보문도 함께 작성하세요:
+- oneLiner: 한 줄 소개 (이모지 포함, 70자 이내, 친근한 톤)
+- sns: SNS 게시글 (이모지·줄바꿈·해시태그 포함)
+- youtube: 유튜브 설명문 (📌 섹션 구분, 소개/기능/활용/링크/태그 포함)
+- training: 연수자료용 소개문 (1)개발배경 2)주요기능 3)사용방법 4)기대효과 5)참고링크 구조)
+- readme: README.md 초안 (# 제목 ## 섹션 구조, 마크다운 형식)
+- portfolioDescription: 포트폴리오 카드 설명문 (홍보성·감성적 표현 없이 핵심 기능과 목적만 사실적으로, 20~60자)
+참고 링크 — 배포 URL: ${deployUrl || '(없음)'} / GitHub: ${repo.html_url}`
+        : '';
+
       const prompt = `당신은 한국 교사가 만든 교육용 GitHub 웹앱을 분석하는 AI 비서입니다.
 아래 리포지토리 정보를 보고 교사용 교육 앱 메타데이터를 추론해 JSON으로 반환하세요.
 
@@ -2872,7 +3001,7 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
 - targetUsers: 주 사용 대상 (예: 초등학생, 교사, 학부모)
 - useCase: 주 활용 장면 (예: 국어 수업, 학급 운영, 교사 연수)
 - features: 주요 기능 목록 (3~5개, 배열)
-- hashtags: 관련 해시태그 (5~8개, # 없이, 배열)`;
+- hashtags: 관련 해시태그 (5~8개, # 없이, 배열)${promoRules}`;
       const text = await callGemini(geminiApiKey, prompt, { jsonMode: true, onModelChange: setCurrentModel });
       setCurrentModel(null);
       const data = extractJson(text);
@@ -2894,9 +3023,22 @@ function EditModal({ repo, meta, categories, lang, onClose, onSave, onOpenPromo,
         setHashtagsInput(data.hashtags.join(', '));
         nextMeta.hashtags = data.hashtags;
       }
-      // 홍보문 생성 이력이 없는 첫 편집인 경우 자동으로 홍보문도 생성
+      // 같은 응답에 홍보문도 포함된 경우 — 별도 호출 없이 저장하고 홍보 모달로 이동
       if (onAutoPromo) {
-        onAutoPromo(nextMeta);
+        let promoContent = null;
+        const promoKeys = ['oneLiner', 'sns', 'youtube', 'training', 'readme'];
+        if (promoKeys.some((k) => typeof data[k] === 'string' && data[k])) {
+          promoContent = {};
+          promoKeys.forEach((k) => {
+            if (typeof data[k] === 'string' && data[k]) promoContent[k] = data[k];
+          });
+          if (typeof data.portfolioDescription === 'string' && data.portfolioDescription) {
+            const tags = (Array.isArray(nextMeta.hashtags) ? nextMeta.hashtags : [])
+              .map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
+            promoContent.json = `{\n  id: '',\n  category: '${escStr(nextMeta.category)}',\n  title: '${escStr(nextMeta.appTitleKr || repo.name)}',\n  engTitle: '${escStr(nextMeta.appTitleEn || repo.name)}',\n  description: '${escStr(data.portfolioDescription)}',\n  tags: '${escStr(tags)}',\n  imageUrl: '${escStr(nextMeta.thumbnailUrl || '')}',\n},`;
+          }
+        }
+        onAutoPromo(nextMeta, promoContent);
         return; // EditModal은 onAutoPromo 내부에서 닫힘
       }
     } catch (err) {
@@ -3125,15 +3267,15 @@ class ModalErrorBoundary extends React.Component {
    PromoModal
 ============================================================ */
 
-function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, savedPromo, onUpdatePromo, autoGenerate }) {
+function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKey, token, readme, savedPromo, onUpdatePromo }) {
   const promo = useMemo(() => buildPromo(repo, meta), [repo, meta]);
   const [tab, setTab] = useState('oneLiner');
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [currentModel, setCurrentModel] = useState(null); // AI 호출 중인 모델명
-  const [githubReadme, setGithubReadme] = useState(null);
-  const [readmeLoading, setReadmeLoading] = useState(false);
-  const autoGenerateCalledRef = useRef(false); // StrictMode 이중 호출 방지
+  // App의 영속 캐시(readme prop)를 우선 사용 — 캐시에 아직 없을 때만 직접 fetch
+  const [githubReadme, setGithubReadme] = useState(readme !== undefined ? readme : null);
+  const [readmeLoading, setReadmeLoading] = useState(readme === undefined);
 
   // Unified editable content: driven by App-level promoData (Gist-synced)
   // savedPromo.content 가 plain object 인지 방어적으로 확인 (이전 버전 데이터 호환)
@@ -3149,21 +3291,18 @@ function PromoModal({ repo, meta, lang, onClose, onCopy, onDownload, geminiApiKe
   }, [content, aiGeneratedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (readme !== undefined) {
+      setGithubReadme(readme);
+      setReadmeLoading(false);
+      return;
+    }
     let cancelled = false;
     setReadmeLoading(true);
     fetchGithubReadme(repo.full_name, token).then((md) => {
       if (!cancelled) { setGithubReadme(md); setReadmeLoading(false); }
     }).catch(() => { if (!cancelled) setReadmeLoading(false); });
     return () => { cancelled = true; };
-  }, [repo.full_name, token]);
-
-  // EditModal AI 자동채우기 이후 처음 열리는 경우 홍보문 자동 생성
-  // autoGenerateCalledRef로 StrictMode 이중 호출·중복 실행 방지
-  useEffect(() => {
-    if (!autoGenerate || !geminiApiKey || aiGeneratedAt || autoGenerateCalledRef.current) return;
-    autoGenerateCalledRef.current = true;
-    handleAIGenerate(); // eslint-disable-line react-hooks/exhaustive-deps
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [readme, repo.full_name, token]);
 
   const tabs = [
     { id: 'oneLiner', label: t(lang, 'promoOneLiner'), content: promo.oneLiner, ext: 'txt', mime: 'text/plain' },
@@ -3602,9 +3741,9 @@ function HelpModal({ lang, onClose }) {
           <Globe2 className="w-4 h-4 text-brand-600" /> 사용 흐름
         </h4>
         <ol className="list-decimal pl-5 space-y-1 text-sm text-slate-700">
-          <li>연동하기 — Username 입력 후 “공개 리포지토리 불러오기” 또는 토큰으로 “내 리포지토리 불러오기”</li>
-          <li>리포지토리 확인 — 카드 또는 표에서 한눈에 확인</li>
-          <li>앱 정보 정리 — 편집 모달에서 앱 이름, 설명, 카테고리 등 입력</li>
+          <li>연동하기 — Username 입력 후 “공개 리포지토리 불러오기” 또는 토큰으로 “내 리포지토리 불러오기” (최초 1회면 충분 — 이후에는 앱을 열 때마다 자동 새로고침)</li>
+          <li>리포지토리 확인 — 카드 또는 표에서 한눈에 확인, 상태 배지를 눌러 바로 변경</li>
+          <li>앱 정보 정리 — 편집 모달에서 앱 이름, 설명, 카테고리 등 입력 (“정리 필요” 필터로 미입력 리포만 모아보기)</li>
           <li>홍보자료 생성 — 한 줄 소개, SNS, 유튜브, 연수자료, README 자동 생성</li>
           <li>백업/내보내기 — JSON 백업(토큰 제외) 및 CSV 다운로드</li>
         </ol>
