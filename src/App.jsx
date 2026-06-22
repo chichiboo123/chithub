@@ -12,6 +12,7 @@ import {
   Download,
   Upload,
   Copy,
+  Check,
   ExternalLink,
   Edit3,
   Sparkles,
@@ -827,6 +828,40 @@ function ToastStack({ toasts }) {
 }
 
 /* ============================================================
+   CopyButton — 주소를 클립보드에 복사 (링크 옆 보조 버튼)
+============================================================ */
+
+function CopyButton({ value, label = '주소', onCopy, className = '', iconClass = 'w-3.5 h-3.5' }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef(null);
+
+  useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  if (!value) return null;
+
+  const handleClick = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    await onCopy(value, label);
+    setCopied(true);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => setCopied(false), 1400);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      title={`${label} 주소 복사`}
+      aria-label={`${label} 주소 복사`}
+      className={className}
+    >
+      {copied ? <Check className={`${iconClass} text-emerald-600`} /> : <Copy className={iconClass} />}
+    </button>
+  );
+}
+
+/* ============================================================
    Promo generation
 ============================================================ */
 
@@ -1034,6 +1069,14 @@ function buildPromo(repo, meta) {
 
 export default function App() {
   const { toasts, push } = useToasts();
+
+  const handleCopyUrl = useCallback(
+    async (text, label = '주소') => {
+      const ok = await copyToClipboard(text);
+      push(ok ? `${label} 주소를 클립보드에 복사했습니다.` : '복사에 실패했습니다.', ok ? 'success' : 'error');
+    },
+    [push]
+  );
 
   /* --- settings (language, theme, saved username, saveToken, savedToken) --- */
   const [settings, setSettings] = useState(() => {
@@ -2170,6 +2213,7 @@ export default function App() {
                   loadingCommits={loadingCommitsFor === repo.full_name}
                   readmeStatus={readmeOf(repo.full_name)}
                   onViewReadme={() => handleViewReadme(repo.full_name)}
+                  onCopy={handleCopyUrl}
                 />
               ))}
             </div>
@@ -2300,24 +2344,40 @@ export default function App() {
                             >
                               <Github className="w-4 h-4" />
                             </a>
+                            <CopyButton
+                              value={repo.html_url}
+                              label="GitHub"
+                              onCopy={handleCopyUrl}
+                              className="p-1.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 inline-flex"
+                              iconClass="w-4 h-4"
+                            />
                             {d.url ? (
-                              <a
-                                href={d.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="p-1.5 rounded hover:bg-slate-100 text-slate-700 inline-flex relative"
-                                title={
-                                  d.source === 'auto'
-                                    ? `GitHub Pages 자동 감지: ${d.url}`
-                                    : d.url
-                                }
-                                aria-label="배포 URL 열기"
-                              >
-                                <ExternalLink className="w-4 h-4" />
-                                {d.source === 'auto' && (
-                                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-amber-400 rounded-full" />
-                                )}
-                              </a>
+                              <>
+                                <a
+                                  href={d.url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1.5 rounded hover:bg-slate-100 text-slate-700 inline-flex relative"
+                                  title={
+                                    d.source === 'auto'
+                                      ? `GitHub Pages 자동 감지: ${d.url}`
+                                      : d.url
+                                  }
+                                  aria-label="배포 URL 열기"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                  {d.source === 'auto' && (
+                                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 bg-amber-400 rounded-full" />
+                                  )}
+                                </a>
+                                <CopyButton
+                                  value={d.url}
+                                  label="배포 URL"
+                                  onCopy={handleCopyUrl}
+                                  className="p-1.5 rounded hover:bg-slate-100 text-slate-400 hover:text-slate-700 inline-flex"
+                                  iconClass="w-4 h-4"
+                                />
+                              </>
                             ) : (
                               <span className="p-1.5 inline-flex text-slate-300">
                                 <ExternalLink className="w-4 h-4" />
@@ -2711,7 +2771,7 @@ function Modal({ title, onClose, children, footer, wide }) {
    RepoCard
 ============================================================ */
 
-function RepoCard({ repo, meta, lang, onEdit, onPromo, onQuickStatus, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme }) {
+function RepoCard({ repo, meta, lang, onEdit, onPromo, onQuickStatus, onLoadCommits, commits, loadingCommits, readmeStatus, onViewReadme, onCopy }) {
   const deploy = getDeploymentUrl(repo, meta);
 
   return (
@@ -2849,32 +2909,50 @@ function RepoCard({ repo, meta, lang, onEdit, onPromo, onQuickStatus, onLoadComm
       <div className="mt-auto pt-3 border-t border-slate-100">
         {/* secondary links: GitHub / 배포 / 최근 커밋 */}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-          <a
-            className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1"
-            href={repo.html_url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Github className="w-3.5 h-3.5" /> GitHub
-          </a>
-          {deploy.url && (
+          <span className="inline-flex items-center gap-0.5">
             <a
-              className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1 max-w-[160px]"
-              href={deploy.url}
+              className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1"
+              href={repo.html_url}
               target="_blank"
               rel="noreferrer"
-              title={
-                deploy.source === 'auto'
-                  ? `GitHub Pages 자동 감지: ${deploy.url}`
-                  : deploy.url
-              }
             >
-              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">{t(lang, 'deployUrl')}</span>
-              {deploy.source === 'auto' && (
-                <span className="text-[10px] text-amber-600 font-semibold shrink-0">·자동</span>
-              )}
+              <Github className="w-3.5 h-3.5" /> GitHub
             </a>
+            <CopyButton
+              value={repo.html_url}
+              label="GitHub"
+              onCopy={onCopy}
+              className="p-0.5 rounded text-slate-400 hover:text-brand-700 hover:bg-slate-100"
+              iconClass="w-3 h-3"
+            />
+          </span>
+          {deploy.url && (
+            <span className="inline-flex items-center gap-0.5 max-w-[200px]">
+              <a
+                className="text-slate-600 hover:text-brand-700 inline-flex items-center gap-1 min-w-0"
+                href={deploy.url}
+                target="_blank"
+                rel="noreferrer"
+                title={
+                  deploy.source === 'auto'
+                    ? `GitHub Pages 자동 감지: ${deploy.url}`
+                    : deploy.url
+                }
+              >
+                <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{t(lang, 'deployUrl')}</span>
+                {deploy.source === 'auto' && (
+                  <span className="text-[10px] text-amber-600 font-semibold shrink-0">·자동</span>
+                )}
+              </a>
+              <CopyButton
+                value={deploy.url}
+                label="배포 URL"
+                onCopy={onCopy}
+                className="p-0.5 rounded text-slate-400 hover:text-brand-700 hover:bg-slate-100 shrink-0"
+                iconClass="w-3 h-3"
+              />
+            </span>
           )}
           {readmeStatus !== null && (
             <button
