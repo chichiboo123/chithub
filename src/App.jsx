@@ -532,32 +532,44 @@ const copyToClipboard = async (text) => {
    GitHub API
 ============================================================ */
 
-async function fetchPublicRepos(username) {
-  const res = await fetch(
-    `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=100`,
-    { headers: { Accept: 'application/vnd.github+json' } }
-  );
-  if (!res.ok) {
-    const err = new Error(friendlyApiError(res.status));
-    err.status = res.status;
-    throw err;
+// GitHub API는 한 번에 최대 100개까지만 내려주므로, 다음 페이지가 없을 때까지 반복 요청해
+// 리포지토리를 전부 가져온다. (표시 개수 제한 없음)
+const GITHUB_PER_PAGE = 100;
+const GITHUB_MAX_PAGES = 100; // 안전장치: 최대 10,000개
+
+async function fetchAllRepoPages(buildUrl, headers) {
+  const all = [];
+  for (let page = 1; page <= GITHUB_MAX_PAGES; page += 1) {
+    const res = await fetch(buildUrl(page), { headers });
+    if (!res.ok) {
+      const err = new Error(friendlyApiError(res.status));
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) break;
+    all.push(...data);
+    if (data.length < GITHUB_PER_PAGE) break;
   }
-  return res.json();
+  return all;
+}
+
+async function fetchPublicRepos(username) {
+  return fetchAllRepoPages(
+    (page) =>
+      `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=${GITHUB_PER_PAGE}&page=${page}`,
+    { Accept: 'application/vnd.github+json' }
+  );
 }
 
 async function fetchMyRepos(token) {
-  const res = await fetch(`https://api.github.com/user/repos?sort=updated&per_page=100`, {
-    headers: {
+  return fetchAllRepoPages(
+    (page) => `https://api.github.com/user/repos?sort=updated&per_page=${GITHUB_PER_PAGE}&page=${page}`,
+    {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${token}`,
-    },
-  });
-  if (!res.ok) {
-    const err = new Error(friendlyApiError(res.status));
-    err.status = res.status;
-    throw err;
-  }
-  return res.json();
+    }
+  );
 }
 
 async function fetchGithubReadme(fullName, token) {
